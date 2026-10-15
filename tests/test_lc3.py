@@ -8,13 +8,16 @@ import io
 import sys
 import os
 
-from lc3_core import (
+# Asegurar que el paquete lc3 sea importable directamente al correr este archivo
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from lc3.core import (
     MASK_16, FL_POS, FL_ZRO, FL_NEG,
     sign_extend, to_uint16, to_int16, disassemble_instruction
 )
-from lc3_assembler import LC3Assembler, AssemblyError, assemble_file
-from lc3_sim import LC3Simulator
-
+from lc3.assembler import LC3Assembler, AssemblyError, assemble_file
+from lc3.sim import LC3Simulator
+from lc3.debugger import LC3Debugger
 
 class TestLC3Core(unittest.TestCase):
     def test_sign_extend(self):
@@ -188,13 +191,13 @@ VALUE   .FILL #100
         self.assertEqual(self.sim.memory[addr], 101)
 
     def test_full_multiplication_program(self):
-        asm_path = os.path.join(os.path.dirname(__file__), "examples", "mult.asm")
-        obj_path = os.path.join(os.path.dirname(__file__), "examples", "mult.obj")
+        asm_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "mult.asm")
+        obj_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "mult.obj")
         orig, count = assemble_file(asm_path, obj_path=obj_path)
 
         sim = LC3Simulator()
         sim.load_obj(obj_path)
-        sym_path = os.path.join(os.path.dirname(__file__), "examples", "mult.sym")
+        sym_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "mult.sym")
         sim.load_sym(sym_path)
 
         # Capturar salida de texto
@@ -219,8 +222,8 @@ VALUE   .FILL #100
         self.assertIn("Multiplicacion completada", output)
 
     def test_full_hello_program(self):
-        asm_path = os.path.join(os.path.dirname(__file__), "examples", "hello.asm")
-        obj_path = os.path.join(os.path.dirname(__file__), "examples", "hello.obj")
+        asm_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "hello.asm")
+        obj_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "hello.obj")
         assemble_file(asm_path, obj_path=obj_path)
 
         sim = LC3Simulator()
@@ -341,7 +344,6 @@ VALUE   .FILL #100
         sim = LC3Simulator()
         for i, w in enumerate(words):
             sim.memory[orig + i] = w
-        from lc3_debugger import LC3Debugger
         dbg = LC3Debugger(sim, orig)
 
         # Avanzar hasta x0201 (BRzp GETC_HANDLER)

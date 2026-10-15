@@ -8,7 +8,7 @@ import sys
 import os
 import time
 from typing import Optional, List, Dict
-from lc3_core import (
+from .core import (
     MEMORY_SIZE, MASK_16, SIGN_BIT_16, NUM_REGISTERS,
     FL_POS, FL_ZRO, FL_NEG,
     OP_BR, OP_ADD, OP_LD, OP_ST, OP_JSR, OP_AND, OP_LDR, OP_STR,
@@ -17,7 +17,7 @@ from lc3_core import (
     MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR,
     sign_extend, to_uint16, to_int16, get_cc_name, disassemble_instruction
 )
-from lc3_os import get_os_image
+from .os_image import get_os_image
 
 # Soporte para entrada de teclado no bloqueante en Windows
 try:

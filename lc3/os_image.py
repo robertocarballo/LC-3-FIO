@@ -5,11 +5,11 @@ emulando el sondeo (polling) sobre registros MMIO (KBSR, KBDR, DSR, DDR, MCR).
 """
 
 from typing import Dict, Tuple, List
-from lc3_core import (
+from .core import (
     TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT,
     MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR
 )
-from lc3_assembler import LC3Assembler
+from .assembler import LC3Assembler
 
 # Direcciones base de las rutinas de servicio del Sistema Operativo en memoria
 OS_START_ADDR = 0x0200

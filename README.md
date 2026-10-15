@@ -2,35 +2,40 @@
 
 Este proyecto proporciona un entorno completo, pedagógico y funcional para la arquitectura **LC-3** desarrollado en **Python puro** (compatible con Python 3.8+ y probado en Python 3.14+). Incluye:
 
-1. **Interfaz Gráfica de Usuario (GUI)** (`lc3_gui.py`): entorno de escritorio completo con editor integrado, desensamblador en vivo, seguimiento de PC, puntos de interrupción interactivos, visor/editor de memoria y registros, consola de E/S y control de velocidad.
-2. **Sistema Operativo LC-3 en Memoria** (`lc3_os.py`): tabla de vectores de interrupción (`x0020`–`x0025`) y manejadores TRAP en lenguaje ensamblador que emulan fielmente el comportamiento de sondeo (polling) sobre registros MMIO (`KBSR`, `KBDR`, `DSR`, `DDR`, `MCR`).
-3. **Ensamblador de dos pasadas** (`lc3_assembler.py`): traduce código fuente `.asm` a binarios `.obj` en formato estándar big-endian y genera tablas de símbolos `.sym` y volcados `.hex`.
-4. **Simulador y Máquina Virtual** (`lc3_sim.py`): emula fielmente la arquitectura con ciclo fetch-decode-execute, memoria de 64K palabras, registros R0–R7, códigos de condición (N, Z, P), servicios de interrupción TRAP mediante hardware linkage y registros de E/S mapeados en memoria (MMIO).
-5. **Depurador interactivo de consola** (`lc3_debugger.py`): permite depuración paso a paso (`step`, `next`), puntos de interrupción por dirección o nombre de etiqueta, desensamblado dinámico e inspección y edición de memoria y registros.
-6. **CLI Unificada** (`lc3.py`): interfaz de comandos sencilla y amigable (lanza la GUI por defecto o permite subcomandos `asm`, `run`, `debug`, `test`, `gui`).
+1. **Interfaz Gráfica de Usuario (GUI)** (`lc3/gui.py`): entorno de escritorio completo con editor integrado, desensamblador en vivo, seguimiento de PC, puntos de interrupción interactivos, visor/editor de memoria y registros, consola de E/S y control de velocidad.
+2. **Sistema Operativo LC-3 en Memoria** (`lc3/os_image.py`): tabla de vectores de interrupción (`x0020`–`x0025`) y manejadores TRAP en lenguaje ensamblador que emulan fielmente el comportamiento de sondeo (polling) sobre registros MMIO (`KBSR`, `KBDR`, `DSR`, `DDR`, `MCR`).
+3. **Ensamblador de dos pasadas** (`lc3/assembler.py`): traduce código fuente `.asm` a binarios `.obj` en formato estándar big-endian y genera tablas de símbolos `.sym` y volcados `.hex`.
+4. **Simulador y Máquina Virtual** (`lc3/sim.py`): emula fielmente la arquitectura con ciclo fetch-decode-execute, memoria de 64K palabras, registros R0–R7, códigos de condición (N, Z, P), servicios de interrupción TRAP mediante hardware linkage y registros de E/S mapeados en memoria (MMIO).
+5. **Depurador interactivo de consola** (`lc3/debugger.py`): permite depuración paso a paso (`step`, `next`), puntos de interrupción por dirección o nombre de etiqueta, desensamblado dinámico e inspección y edición de memoria y registros.
+6. **CLI Unificada** (`lc3.py` / `lc3/cli.py`): interfaz de comandos sencilla y amigable (lanza la GUI por defecto o permite subcomandos `asm`, `run`, `debug`, `test`, `gui`).
 7. **Programas de ejemplo** (`examples/`): programas listos para ensamblar y ejecutar.
-8. **Suite de pruebas unitarias** (`test_lc3.py`): 14 pruebas automáticas de la codificación, ejecución de instrucciones y rutinas del Sistema Operativo.
+8. **Suite de pruebas unitarias** (`tests/test_lc3.py`): 15 pruebas automáticas de la codificación, ejecución de instrucciones y rutinas del Sistema Operativo.
 
 ---
 
 ## Estructura de Archivos
 
 ```
-G:\Roberto\arquitectura de computadoras\lab3\
-├── lc3_gui.py          # Interfaz gráfica de escritorio moderna con Tkinter
-├── lc3.py              # CLI principal (gui, asm, run, debug, test)
-├── lc3_core.py         # Definición de la ISA (registros, flags, opcodes, desensamblador)
-├── lc3_os.py           # Imagen y código ensamblador del Sistema Operativo LC-3 (Vectores TRAP y MMIO)
-├── lc3_assembler.py    # Ensamblador de dos pasadas y generador de .obj / .sym / .hex
-├── lc3_sim.py          # Simulador / Máquina Virtual (CPU, ciclo de instrucción, TRAPs, MMIO)
-├── lc3_debugger.py     # Depurador interactivo en consola estilo GDB
-├── test_lc3.py         # Suite de pruebas unitarias automatizadas (14 tests)
-├── README.md           # Esta guía de uso y documentación técnica
-└── examples/           # Programas de prueba en ensamblador LC-3
-    ├── hello.asm       # Imprime "Hello, World!" con PUTS
-    ├── mult.asm        # Multiplicación de 6 * 7 por sumas sucesivas
-    ├── count.asm       # Bucle contador regresivo (de 9 a 0)
-    └── echo.asm        # Eco interactivo de teclado con salida al pulsar 'q'
+lc3-simulator/
+├── lc3.py              # CLI principal y lanzador raíz (gui, asm, run, debug, test)
+├── lc3/                # Paquete modular del núcleo LC-3
+│   ├── __init__.py     # Exportaciones de API pública del paquete
+│   ├── core.py         # Definición de la ISA (registros, flags, opcodes, desensamblador)
+│   ├── os_image.py     # Imagen y código ensamblador del Sistema Operativo LC-3 (Vectores TRAP y MMIO)
+│   ├── assembler.py    # Ensamblador de dos pasadas y generador de .obj / .sym / .hex
+│   ├── sim.py          # Simulador / Máquina Virtual (CPU, ciclo de instrucción, TRAPs, MMIO)
+│   ├── debugger.py     # Depurador interactivo en consola estilo GDB
+│   ├── gui.py          # Interfaz gráfica de escritorio moderna con Tkinter
+│   └── cli.py          # Lógica interna de la interfaz de línea de comandos
+├── tests/              # Suite de pruebas unitarias e integración
+│   ├── __init__.py
+│   └── test_lc3.py     # 15 pruebas unitarias automatizadas
+├── examples/           # Programas de prueba en ensamblador LC-3
+│   ├── hello.asm       # Imprime "Hello, World!" con PUTS
+│   ├── mult.asm        # Multiplicación de 6 * 7 por sumas sucesivas
+│   ├── count.asm       # Bucle contador regresivo (de 9 a 0)
+│   └── echo.asm        # Eco interactivo de teclado con salida al pulsar 'q'
+└── README.md           # Esta guía de uso y documentación técnica
 ```
 
 ---
@@ -66,7 +71,7 @@ G:\Roberto\arquitectura de computadoras\lab3\
 
 ## Sistema Operativo LC-3 y Emulación de Sondeo (Polling)
 
-A diferencia de emuladores que interceptan las llamadas TRAP directamente en código de alto nivel, este simulador implementa el **Sistema Operativo auténtico de la LC-3** cargado en la memoria de la máquina virtual (`lc3_os.py`):
+A diferencia de emuladores que interceptan las llamadas TRAP directamente en código de alto nivel, este simulador implementa el **Sistema Operativo auténtico de la LC-3** cargado en la memoria de la máquina virtual (`lc3/os_image.py`):
 
 1. **Tabla de Vectores TRAP (`x0020` – `x0025`)**:
    - `x0020` (GETC)  $\rightarrow$ apunta al manejador en `x0200`
@@ -202,7 +207,7 @@ La consola de depuración cargará automáticamente la tabla de símbolos `.sym`
 
 ## Suite de Pruebas Automatizadas
 
-El proyecto incluye 11 pruebas unitarias e integrales que verifican:
+El proyecto incluye 15 pruebas unitarias e integrales que verifican:
 - Codificación y extensión de signo de inmediatos.
 - Formatos de instrucciones y validación de rangos de saltos.
 - Detección de errores sintácticos y etiquetas no definidas.
@@ -217,7 +222,8 @@ python lc3.py test
 ```
 o bien:
 ```powershell
-python test_lc3.py
+python -m unittest discover tests
+python tests/test_lc3.py
 ```
 
 ---

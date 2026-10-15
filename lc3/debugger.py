@@ -7,11 +7,11 @@ inspección y modificación de registros y memoria, y desensamblado dinámico.
 import sys
 import re
 from typing import Optional, Set
-from lc3_core import (
+from .core import (
     MASK_16, to_uint16, to_int16, get_cc_name, disassemble_instruction,
     OP_JSR, OP_TRAP, TRAP_HALT
 )
-from lc3_sim import LC3Simulator
+from .sim import LC3Simulator
 
 
 class LC3Debugger:

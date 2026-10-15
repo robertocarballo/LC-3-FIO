@@ -7,7 +7,7 @@ Genera binarios .obj estándar (big-endian) y tablas de símbolos .sym.
 import re
 import sys
 from typing import Dict, List, Tuple, Optional
-from lc3_core import (
+from .core import (
     MASK_16,
     OP_BR, OP_ADD, OP_LD, OP_ST, OP_JSR, OP_AND, OP_LDR, OP_STR,
     OP_RTI, OP_NOT, OP_LDI, OP_STI, OP_JMP, OP_LEA, OP_TRAP,

@@ -10,14 +10,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from typing import Optional, Dict, Set
 
-from lc3_core import (
+from .core import (
     MASK_16, MEMORY_SIZE,
     FL_POS, FL_ZRO, FL_NEG,
     to_uint16, to_int16, get_cc_name, disassemble_instruction,
     OP_JSR, OP_TRAP, TRAP_HALT, TRAP_GETC, TRAP_IN
 )
-from lc3_assembler import LC3Assembler, AssemblyError, assemble_file
-from lc3_sim import LC3Simulator
+from .assembler import LC3Assembler, AssemblyError, assemble_file
+from .sim import LC3Simulator
 
 
 class LC3GUI(tk.Tk):
@@ -64,7 +64,7 @@ class LC3GUI(tk.Tk):
             self.load_file(initial_file)
         else:
             # Intentar cargar hello.asm por defecto si existe
-            default_ex = os.path.join(os.path.dirname(__file__), "examples", "hello.asm")
+            default_ex = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", "hello.asm")
             if os.path.isfile(default_ex):
                 self.load_file(default_ex)
             else:
@@ -509,7 +509,7 @@ class LC3GUI(tk.Tk):
             self.load_file(path)
 
     def _load_example(self, example_name: str):
-        ex_path = os.path.join(os.path.dirname(__file__), "examples", example_name)
+        ex_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "examples", example_name)
         if os.path.isfile(ex_path):
             self.load_file(ex_path)
         else:
@@ -582,7 +582,7 @@ class LC3GUI(tk.Tk):
         try:
             orig, words, symbols = assembler.assemble(code)
             # Guardar temporalmente en un archivo para que sim lo mantenga
-            temp_obj = os.path.join(os.path.dirname(__file__), "_temp_editor.obj")
+            temp_obj = os.path.join(os.path.dirname(os.path.dirname(__file__)), "_temp_editor.obj")
             assembler.write_obj_file(temp_obj, orig, words)
             self.sim.load_obj(temp_obj)
             self.sim.symbols = {addr: name for name, addr in symbols.items()}
