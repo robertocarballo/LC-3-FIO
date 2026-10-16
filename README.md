@@ -13,10 +13,43 @@ Este proyecto proporciona un entorno completo, pedagógico y funcional para la a
 
 ---
 
+## Arquitectura del Sistema
+
+```mermaid
+flowchart TD
+    subgraph Entrada
+        ASM["Código Fuente (.asm)"]
+        OBJ_IN["Binario (.obj)"]
+    end
+
+    subgraph "Herramientas de Traducción"
+        Assembler["Ensamblador LC-3 (lc3/assembler.py)\n- Pasada 1: Tabla de Símbolos\n- Pasada 2: Codificación Binaria"]
+    end
+
+    subgraph "Entorno de Ejecución"
+        VM["Máquina Virtual LC-3 (lc3/sim.py)\n- Ciclo Fetch-Decode-Execute\n- Memoria 64K + R0-R7 + PSR/CC"]
+        OS["Microkernel LC-3 (lc3/os_image.py)\n- Vectores TRAP (x20-x25)\n- Sondeo MMIO (KBSR, DSR)"]
+        VM <--> OS
+    end
+
+    subgraph "Interfaces de Usuario"
+        CLI["CLI Unificada (lc3.py / lc3/cli.py)"]
+        DBG["Depurador Consola (lc3/debugger.py)"]
+        GUI["Interfaz Tkinter (lc3/gui.py)"]
+    end
+
+    ASM --> Assembler --> OBJ_IN --> VM
+    CLI --> VM
+    DBG --> VM
+    GUI --> VM
+```
+
+---
+
 ## Estructura de Archivos
 
 ```
-lc3-simulator/
+LC-3-FIO/
 ├── lc3.py              # CLI principal y lanzador raíz (gui, asm, run, debug, test)
 ├── lc3/                # Paquete modular del núcleo LC-3
 │   ├── __init__.py     # Exportaciones de API pública del paquete
@@ -104,13 +137,25 @@ A diferencia de emuladores que interceptan las llamadas TRAP directamente en có
 
 ---
 
+## Requisitos Previos
+
+- **Python**: Versión 3.8 o superior (probado en Python 3.10 a 3.14).
+- **Soporte de GUI (Tkinter)**:
+  - En Windows y macOS se incluye de forma nativa con el instalador de Python.
+  - En distribuciones Linux (si no está instalado):
+    - Debian / Ubuntu: `sudo apt install python3-tk`
+    - Arch Linux: `sudo pacman -S tk`
+    - Fedora: `sudo dnf install python3-tkinter`
+
+---
+
 ## Guía de Uso Rápida
 
 ### 1. Iniciar la Interfaz Gráfica (GUI)
 
 La forma más visual e interactiva de usar el simulador es a través de su interfaz gráfica de escritorio:
 
-```powershell
+```bash
 python lc3.py
 ```
 *(O también: `python lc3.py gui` o `python lc3.py gui examples/mult.asm`).*
@@ -142,7 +187,7 @@ python lc3.py
 
 Traduce el código fuente a un archivo binario ejecutable `.obj`:
 
-```powershell
+```bash
 python lc3.py asm examples/hello.asm
 ```
 
@@ -151,7 +196,7 @@ Opciones útiles:
 - `--hex`: Genera además un archivo de texto `.hex` con el volcado hexadecimal de memoria para inspección o Logisim.
 
 Ejemplo:
-```powershell
+```bash
 python lc3.py asm examples/mult.asm --hex
 ```
 
@@ -159,12 +204,12 @@ python lc3.py asm examples/mult.asm --hex
 
 Ejecuta el programa directamente hasta que alcance una instrucción `HALT`:
 
-```powershell
+```bash
 python lc3.py run examples/hello.obj
 ```
 
 > **Nota**: Si pasas un archivo `.asm` directamente a `run`, el CLI lo ensamblará automáticamente antes de ejecutarlo:
-> ```powershell
+> ```bash
 > python lc3.py run examples/hello.asm
 > ```
 
@@ -176,7 +221,7 @@ Opciones adicionales:
 
 Inicia la sesión interactiva de depuración:
 
-```powershell
+```bash
 python lc3.py debug examples/mult.obj
 ```
 
@@ -217,11 +262,11 @@ El proyecto incluye 15 pruebas unitarias e integrales que verifican:
 
 Para ejecutar todas las pruebas:
 
-```powershell
+```bash
 python lc3.py test
 ```
 o bien:
-```powershell
+```bash
 python -m unittest discover tests
 python tests/test_lc3.py
 ```
@@ -242,3 +287,14 @@ python tests/test_lc3.py
   - `.BLKW <count>`: Reserva un bloque contiguo de `<count>` palabras (inicializadas en cero).
   - `.STRINGZ "<texto>"`: Almacena una cadena de caracteres ASCII terminada con el carácter nulo (`\0`).
   - `.END`: Indica el fin del archivo fuente.
+
+---
+
+## Convenciones de Contribución
+
+El proyecto utiliza el estándar de **Conventional Commits**:
+- `feat`: Incorporación de una nueva funcionalidad.
+- `fix`: Corrección de un defecto o bug.
+- `refactor`: Modificaciones de código que no corrigen bugs ni agregan funcionalidades.
+- `docs`: Cambios exclusivos en archivos de documentación.
+- `test`: Adición o actualización de pruebas unitarias o de integración.
