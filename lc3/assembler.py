@@ -1,11 +1,12 @@
-"""
-lc3_assembler.py - Ensamblador de dos pasadas para la arquitectura LC-3.
-Soporta todas las instrucciones estándar, pseudoinstrucciones y directivas.
-Genera binarios .obj estándar (big-endian) y tablas de símbolos .sym.
+"""Ensamblador de dos pasadas para la arquitectura LC-3.
+
+Responsabilidad:
+    Traducir código fuente .asm a binarios ejecutables .obj en formato estándar big-endian,
+    generar tablas de símbolos .sym para depuración y volcados legibles .hex, validando
+    directivas (.ORIG, .END, .FILL, .BLKW, .STRINGZ), offsets relativos y sintaxis de instrucciones.
 """
 
 import re
-import sys
 from typing import Dict, List, Tuple, Optional
 from .core import (
     MASK_16,
@@ -35,15 +36,37 @@ RESERVED_WORDS = set(REGISTERS.keys()) | set(PSEUDO_OPS.keys()) | {
 
 
 class AssemblyError(Exception):
+    """Excepción de dominio para errores léxicos, sintácticos o semánticos en el ensamblado.
+
+    Encapsula el contexto completo de la línea fuente donde se originó el error para
+    facilitar el diagnóstico al desarrollador.
+
+    Attributes:
+        line_num (int): Número de línea fuente (indexado desde 1).
+        line_text (str): Contenido textual original de la línea que falló.
+        message (str): Descripción detallada del motivo de la falla.
+    """
+
     def __init__(self, line_num: int, line_text: str, message: str):
         self.line_num = line_num
         self.line_text = line_text
         self.message = message
         super().__init__(f"Línea {line_num}: {message}\n  -> {line_text.strip()}")
 
-
 def parse_number(token: str) -> Optional[int]:
-    """Parsea representaciones numéricas: #123, #-5, x3000, 0x3000, b1010, etc."""
+    """Parsea representaciones numéricas literales en base decimal, hexadecimal o binaria.
+
+    Formatos reconocidos:
+        - Decimal: prefijo '#' opcional (e.g., '#42', '#-10', '15').
+        - Hexadecimal: prefijo 'x', 'X', '0x' o '0X' (e.g., 'x3000', '0xFFFF', '-x10').
+        - Binario: prefijo 'b', 'B', '0b' o '0B' (e.g., 'b1010', '0b11110000').
+
+    Args:
+        token (str): Cadena que contiene el literal numérico a analizar.
+
+    Returns:
+        Optional[int]: Valor entero parseado o None si el token no conforma un número válido.
+    """
     token = token.strip()
     if not token:
         return None
@@ -74,13 +97,29 @@ def parse_number(token: str) -> Optional[int]:
 
 
 def parse_register(token: str) -> Optional[int]:
-    """Parsea un nombre de registro como R0-R7."""
+    """Parsea un identificador de registro general de la arquitectura LC-3 (R0 a R7).
+
+    Args:
+        token (str): Nombre del registro (insensible a mayúsculas/minúsculas).
+
+    Returns:
+        Optional[int]: Índice numérico del registro [0..7] o None si no es válido.
+    """
     t = token.strip().upper()
     return REGISTERS.get(t)
 
 
 def unescape_string(s: str) -> str:
-    """Procesa secuencias de escape estándar dentro de .STRINGZ."""
+    """Decodifica secuencias de escape estándar en cadenas literales de directivas .STRINGZ.
+
+    Secuencias soportadas: \\n, \\t, \\r, \\0, \\\\, \\", \\'.
+
+    Args:
+        s (str): Cadena cruda extraída de las comillas.
+
+    Returns:
+        str: Cadena procesada con los caracteres de escape reales sustituidos.
+    """
     escapes = {
         r'\n': '\n',
         r'\t': '\t',
@@ -95,8 +134,17 @@ def unescape_string(s: str) -> str:
 
 
 def tokenize_line(line: str) -> List[str]:
-    """
-    Divide una línea en tokens considerando strings entre comillas y comentarios (; o #).
+    """Divide una línea de ensamblador en tokens léxicos respetando cadenas y comentarios.
+
+    Descarta comentarios iniciados con ';' o '#'. Respeta espacios contenidos dentro
+    de comillas dobles para cadenas de texto de .STRINGZ. Separa operandos delimitados
+    por comas y/o espacios en blanco.
+
+    Args:
+        line (str): Línea completa de código fuente.
+
+    Returns:
+        List[str]: Lista ordenada de tokens lexicográficos limpios.
     """
     # Eliminar comentarios que no estén dentro de comillas
     cleaned = []
@@ -126,17 +174,26 @@ class LC3Assembler:
     def __init__(self):
         self.symbols: Dict[str, int] = {}
         self.orig_addr: Optional[int] = None
-        self.instructions: List[Tuple[int, int, str]] = []  # (address, value, debug_text)
 
     def assemble(self, source_text: str) -> Tuple[int, List[int], Dict[str, int]]:
-        """
-        Ensambla código fuente LC-3.
-        Retorna (orig_address, list_of_16bit_words, symbol_table).
+        """Ejecuta el proceso completo de ensamblado de dos pasadas sobre el código fuente.
+
+        Args:
+            source_text (str): Texto completo del archivo en ensamblador LC-3.
+
+        Returns:
+            Tuple[int, List[int], Dict[str, int]]:
+                - orig_addr (int): Dirección de origen de memoria especificada por .ORIG.
+                - words (List[int]): Lista de palabras binarias de 16 bits generadas.
+                - symbols (Dict[str, int]): Tabla de símbolos {nombre_etiqueta: direccion_memoria}.
+
+        Raises:
+            AssemblyError: Si ocurre un error léxico, sintáctico, directiva faltante (.ORIG / .END),
+                etiqueta duplicada o no definida, o desplazamiento relativo fuera de rango.
         """
         lines = source_text.splitlines()
         self.symbols.clear()
         self.orig_addr = None
-        self.instructions.clear()
 
         # ==================== PASADA 1 ====================
         # Encontrar .ORIG, recolectar etiquetas y calcular direcciones de memoria
@@ -271,14 +328,12 @@ class LC3Assembler:
                         raise AssemblyError(idx, raw_line, f"Símbolo no definido '{args[0]}' en .FILL.")
                     val = self.symbols[args[0]]
                 words.append(to_uint16(val))
-                self.instructions.append((pc, to_uint16(val), raw_line))
                 continue
 
             elif mnemonic == ".BLKW":
                 count = parse_number(args[0])
                 for i in range(count):
                     words.append(0)
-                    self.instructions.append((pc + i, 0, f".BLKW [{i}]"))
                 continue
 
             elif mnemonic == ".STRINGZ":
@@ -286,29 +341,41 @@ class LC3Assembler:
                 content = unescape_string(joined[1:-1])
                 for i, ch in enumerate(content):
                     words.append(ord(ch) & 0xFF)
-                    self.instructions.append((pc + i, ord(ch) & 0xFF, f".STRINGZ '{ch}'"))
                 words.append(0)  # Nulo terminador
-                self.instructions.append((pc + len(content), 0, ".STRINGZ '\\0'"))
                 continue
 
             # Pseudo-instrucciones TRAP y RET
             if mnemonic in PSEUDO_OPS:
                 code = PSEUDO_OPS[mnemonic]
                 words.append(code)
-                self.instructions.append((pc, code, raw_line))
                 continue
 
             # Instrucciones de la ISA
             code = self._encode_instruction(idx, raw_line, mnemonic, args, pc)
             words.append(code)
-            self.instructions.append((pc, code, raw_line))
 
         return self.orig_addr, words, self.symbols
 
     def _resolve_offset(self, idx: int, raw_line: str, token: str, pc: int, bit_count: int) -> int:
-        """
-        Calcula y valida un desplazamiento relativo a PC (PCoffset).
-        offset = target - (pc + 1)
+        """Calcula, valida y codifica un desplazamiento relativo a PC (PCoffset).
+
+        Aplica la fórmula canónica de direccionamiento LC-3:
+            offset = target_address - (PC + 1)
+        Verifica que el desplazamiento resultante encaje en el rango representable con
+        'bit_count' bits en complemento a dos [-(2^(b-1)), 2^(b-1) - 1].
+
+        Args:
+            idx (int): Número de línea actual para reporte de errores.
+            raw_line (str): Texto crudo de la línea para contexto del error.
+            token (str): Nombre de etiqueta simbólica o literal numérico de destino.
+            pc (int): Dirección de memoria de la instrucción en curso.
+            bit_count (int): Número de bits del campo de desplazamiento (e.g., 9 u 11).
+
+        Returns:
+            int: Desplazamiento empaquetado como máscara de 'bit_count' bits.
+
+        Raises:
+            AssemblyError: Si la etiqueta no existe o si el desplazamiento desborda el rango.
         """
         target = parse_number(token)
         if target is None:
@@ -448,7 +515,16 @@ class LC3Assembler:
             raise AssemblyError(idx, raw_line, f"Instrucción desconocida '{mnemonic}'.")
 
     def write_obj_file(self, filename: str, orig_addr: int, words: List[int]):
-        """Escribe el binario estándar .obj de LC-3 en formato big-endian."""
+        """Serializa y escribe el binario estándar ejecutable .obj en formato big-endian.
+
+        La cabecera contiene la dirección de origen (2 bytes big-endian) seguida de
+        las palabras de instrucción y datos (2 bytes cada una).
+
+        Args:
+            filename (str): Ruta del archivo destino en disco.
+            orig_addr (int): Dirección inicial de memoria (.ORIG).
+            words (List[int]): Palabras de 16 bits a persistir.
+        """
         with open(filename, "wb") as f:
             # Dirección de origen (2 bytes big-endian)
             f.write(orig_addr.to_bytes(2, byteorder="big"))
@@ -457,7 +533,12 @@ class LC3Assembler:
                 f.write((w & MASK_16).to_bytes(2, byteorder="big"))
 
     def write_sym_file(self, filename: str, symbols: Dict[str, int]):
-        """Escribe el archivo de tabla de símbolos .sym para el depurador."""
+        """Genera el archivo de tabla de símbolos .sym para soporte de depuración.
+
+        Args:
+            filename (str): Ruta del archivo .sym de salida.
+            symbols (Dict[str, int]): Diccionario de símbolos {etiqueta: direccion}.
+        """
         with open(filename, "w", encoding="utf-8") as f:
             f.write("// Symbol table\n")
             f.write("// Scope level 0:\n")
@@ -467,7 +548,15 @@ class LC3Assembler:
                 f.write(f"//\t{sym:<16}  x{addr:04X}\n")
 
     def write_hex_file(self, filename: str, orig_addr: int, words: List[int]):
-        """Escribe un archivo en formato hexadecimal de texto (legible o para simuladores como Logisim)."""
+        """Genera un archivo de texto con el volcado hexadecimal de memoria.
+
+        Útil para inspección humana o importación directa en herramientas como Logisim.
+
+        Args:
+            filename (str): Ruta del archivo .hex de salida.
+            orig_addr (int): Dirección de inicio (.ORIG).
+            words (List[int]): Lista de palabras emitidas.
+        """
         with open(filename, "w", encoding="utf-8") as f:
             f.write(f"# LC-3 HEX DUMP: ORIG x{orig_addr:04X}\n")
             for i, w in enumerate(words):
@@ -475,9 +564,21 @@ class LC3Assembler:
 
 
 def assemble_file(src_path: str, obj_path: str = None, sym_path: str = None, hex_path: str = None) -> Tuple[int, int]:
-    """
-    Función de utilidad para ensamblar un archivo .asm y generar sus salidas.
-    Retorna (orig_addr, total_words).
+    """Función de alto nivel para compilar un archivo fuente .asm a sus artefactos de salida.
+
+    Args:
+        src_path (str): Ruta del archivo fuente .asm.
+        obj_path (str, optional): Ruta de salida para el binario .obj. Si no se especifica,
+            deriva el nombre del archivo fuente.
+        sym_path (str, optional): Ruta de salida para la tabla .sym.
+        hex_path (str, optional): Ruta de salida para el volcado .hex.
+
+    Returns:
+        Tuple[int, int]: (orig_addr, total_words) con la dirección de origen y palabras generadas.
+
+    Raises:
+        AssemblyError: Si el código fuente posee fallos sintácticos o semánticos.
+        OSError: Si ocurren errores de lectura o escritura en el sistema de archivos.
     """
     if obj_path is None:
         if src_path.lower().endswith(".asm"):

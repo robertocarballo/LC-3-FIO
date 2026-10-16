@@ -1,21 +1,23 @@
-"""
-lc3_sim.py - Máquina Virtual / Simulador para la arquitectura LC-3.
-Ejecuta binarios .obj estándar y proporciona ciclo fetch-decode-execute,
-manejo de registros, memoria mapeada (MMIO) y rutinas de TRAP.
+"""Máquina virtual y motor de simulación de la CPU para la arquitectura LC-3.
+
+Responsabilidad:
+    Emular el procesador LC-3 ejecutando el ciclo fetch-decode-execute sobre un espacio de
+    memoria de 64K palabras y 8 registros generales (R0–R7), actualizando los códigos de condición,
+    gestionando llamadas TRAP por hardware y canalizando E/S mediante registros mapeados en memoria (MMIO).
 """
 
 import sys
 import os
 import time
-from typing import Optional, List, Dict
+from typing import Optional, Dict
 from .core import (
-    MEMORY_SIZE, MASK_16, SIGN_BIT_16, NUM_REGISTERS,
+    MEMORY_SIZE, MASK_16, NUM_REGISTERS,
     FL_POS, FL_ZRO, FL_NEG,
     OP_BR, OP_ADD, OP_LD, OP_ST, OP_JSR, OP_AND, OP_LDR, OP_STR,
     OP_RTI, OP_NOT, OP_LDI, OP_STI, OP_JMP, OP_RES, OP_LEA, OP_TRAP,
     TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT,
     MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR,
-    sign_extend, to_uint16, to_int16, get_cc_name, disassemble_instruction
+    sign_extend, to_uint16, to_int16
 )
 from .os_image import get_os_image
 
@@ -28,6 +30,18 @@ except ImportError:
 
 
 class LC3Simulator:
+    """Máquina Virtual que emula el procesador y subsistema de memoria de la arquitectura LC-3.
+
+    Attributes:
+        memory (List[int]): Espacio direccionable de 65,536 palabras de 16 bits sin signo.
+        reg (List[int]): Banco de 8 registros de propósito general (R0 a R7).
+        pc (int): Contador de programa (Program Counter), típicamente inicializado en x3000.
+        cond (int): Flags de condición del PSR (FL_POS, FL_ZRO, FL_NEG).
+        running (bool): Estado del reloj de la CPU (True mientras el procesador esté activo).
+        instruction_count (int): Contador acumulativo de instrucciones ejecutadas.
+        symbols (Dict[int, str]): Tabla de símbolos {direccion: etiqueta} para resolución en desensamblado.
+    """
+
     def __init__(self):
         self.memory = [0] * MEMORY_SIZE
         self.reg = [0] * NUM_REGISTERS
@@ -36,7 +50,6 @@ class LC3Simulator:
         self.running = False
         self.instruction_count = 0
         self.symbols: Dict[int, str] = {}  # Mapeo {direccion: nombre_etiqueta}
-        self.breakpoints = set()
 
         # Callbacks opcionales para interfaz gráfica o redirección de E/S
         self.output_fn = None
@@ -58,7 +71,7 @@ class LC3Simulator:
         self.load_os()
 
     def load_os(self):
-        """Carga la imagen del Sistema Operativo LC-3 en memoria y registra sus símbolos."""
+        """Carga en memoria la imagen binaria del Sistema Operativo LC-3 y su tabla de vectores."""
         os_mem, os_sym = get_os_image()
         self.os_symbols = os_sym
         for addr, val in os_mem.items():
@@ -76,7 +89,11 @@ class LC3Simulator:
             sys.stdout.flush()
 
     def reset(self, start_pc: int = 0x3000):
-        """Reinicia el estado del procesador conservando la memoria y recargando el SO."""
+        """Restablece el estado de los registros, banderas y PC a los valores iniciales.
+
+        Args:
+            start_pc (int, optional): Dirección de memoria en la que comenzará el PC. Por defecto x3000.
+        """
         self.reg = [0] * NUM_REGISTERS
         self.pc = start_pc & MASK_16
         self.cond = FL_ZRO
@@ -90,10 +107,20 @@ class LC3Simulator:
             self.load_os()
 
     def load_obj(self, filename: str) -> int:
-        """
-        Carga un archivo binario .obj en la memoria.
-        El primer entero de 16 bits en big-endian es la dirección de origen (.ORIG).
-        Retorna la dirección de origen.
+        """Carga un archivo binario ejecutable .obj estándar en el espacio de memoria.
+
+        Lee la cabecera big-endian de 2 bytes para determinar la dirección de origen (.ORIG)
+        y almacena secuencialmente las palabras subsiguientes.
+
+        Args:
+            filename (str): Ruta del binario .obj en el sistema de archivos.
+
+        Returns:
+            int: Dirección inicial de carga (.ORIG) en la que se posiciona el PC.
+
+        Raises:
+            ValueError: Si el archivo está vacío o posee un tamaño inferior a 2 bytes.
+            OSError: Si ocurren errores de acceso o lectura en disco.
         """
         with open(filename, "rb") as f:
             data = f.read()
@@ -115,7 +142,11 @@ class LC3Simulator:
         return orig
 
     def load_sym(self, filename: str):
-        """Carga una tabla de símbolos .sym para visualización en desensamblado."""
+        """Carga una tabla de símbolos .sym para permitir resolución simbólica en depuración.
+
+        Args:
+            filename (str): Ruta del archivo .sym en disco.
+        """
         if not os.path.exists(filename):
             return
         with open(filename, "r", encoding="utf-8", errors="replace") as f:
@@ -138,7 +169,11 @@ class LC3Simulator:
                         pass
 
     def update_flags(self, reg_num: int):
-        """Actualiza los códigos de condición (N, Z, P) según el valor en el registro reg_num."""
+        """Actualiza los flags de condición (N, Z, P) en función del valor con signo del registro indicado.
+
+        Args:
+            reg_num (int): Índice del registro modificado [0..7].
+        """
         val = to_int16(self.reg[reg_num])
         if val == 0:
             self.cond = FL_ZRO
@@ -162,7 +197,17 @@ class LC3Simulator:
             return ord(ch) if ch else 0
 
     def mem_read(self, address: int) -> int:
-        """Lectura de memoria con intercepción de registros MMIO."""
+        """Lee una palabra de 16 bits de la memoria, interceptando accesos a registros MMIO.
+
+        Si la dirección corresponde a KBSR (xFE00), sondea el teclado y actualiza el bit 15.
+        Si corresponde a KBDR (xFE02), retorna el carácter ASCII y limpia el bit 15 de KBSR.
+
+        Args:
+            address (int): Dirección de memoria solicitada.
+
+        Returns:
+            int: Valor de 16 bits almacenado o provisto por el periférico MMIO.
+        """
         address &= MASK_16
 
         # Registro de estado de teclado (KBSR)
@@ -206,7 +251,15 @@ class LC3Simulator:
         return self.memory[address]
 
     def mem_write(self, address: int, val: int):
-        """Escritura de memoria con intercepción de registros MMIO."""
+        """Escribe una palabra de 16 bits en la memoria, interceptando registros de control MMIO.
+
+        Si la dirección es DDR (xFE06), emite el carácter a la consola o al callback de salida.
+        Si la dirección es MCR (xFFFE), comprueba el bit 15 para detener el reloj de la CPU (HALT).
+
+        Args:
+            address (int): Dirección de memoria destino.
+            val (int): Valor de 16 bits a persistir.
+        """
         address &= MASK_16
         val &= MASK_16
 
@@ -228,7 +281,11 @@ class LC3Simulator:
             self.memory[address] = val
 
     def handle_trap(self, trapvect: int):
-        """Ejecuta una rutina de servicio del sistema (TRAP)."""
+        """Ejecuta una llamada al sistema TRAP mediante emulación directa o linkage por hardware.
+
+        Args:
+            trapvect (int): Vector de interrupción de 8 bits (e.g., x20 para GETC, x25 para HALT).
+        """
         if trapvect == TRAP_GETC:
             ch = self._read_char()
             self.reg[0] = ch & 0xFF
@@ -283,9 +340,10 @@ class LC3Simulator:
                 print(f"[Aviso] TRAP x{trapvect:02X} no implementado.")
 
     def step(self) -> bool:
-        """
-        Ejecuta un solo ciclo de instrucción (Fetch -> Decode -> Execute).
-        Retorna False si el procesador se detiene, True si continúa.
+        """Ejecuta un ciclo completo de instrucción (Fetch -> Decode -> Execute).
+
+        Returns:
+            bool: True si el procesador continúa en ejecución; False si se detuvo (HALT o error).
         """
         # Fetch
         instr = self.mem_read(self.pc)
@@ -419,9 +477,13 @@ class LC3Simulator:
         return self.running
 
     def run(self, max_steps: Optional[int] = None) -> int:
-        """
-        Ejecuta el programa de forma continua hasta HALT o hasta alcanzar max_steps.
-        Retorna el número de instrucciones ejecutadas.
+        """Ejecuta continuamente el ciclo de instrucciones hasta HALT o hasta alcanzar un límite.
+
+        Args:
+            max_steps (Optional[int], optional): Número máximo de ciclos antes de pausar.
+
+        Returns:
+            int: Número total de instrucciones ejecutadas.
         """
         self.running = True
         try:

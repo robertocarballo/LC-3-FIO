@@ -1,13 +1,14 @@
-"""
-lc3_os.py - Sistema Operativo y Rutinas de Servicio TRAP para la arquitectura LC-3.
-Implementa la Tabla de Vectores de Trap y el código assembly real del SO en memoria,
-emulando el sondeo (polling) sobre registros MMIO (KBSR, KBDR, DSR, DDR, MCR).
+"""Imagen del Sistema Operativo y rutinas de servicio TRAP para la arquitectura LC-3.
+
+Responsabilidad:
+    Compilar y cargar en memoria el microkernel en ensamblador (x0200) y la Tabla de
+    Vectores TRAP (x0020–x0025), emulando los servicios de sistema (GETC, OUT, PUTS, IN,
+    PUTSP, HALT) mediante sondeo continuo sobre registros MMIO (KBSR, KBDR, DSR, DDR, MCR).
 """
 
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple
 from .core import (
-    TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT,
-    MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR
+    TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT
 )
 from .assembler import LC3Assembler
 
@@ -225,11 +226,23 @@ _CACHED_OS_SYMBOLS = None
 
 
 def get_os_image() -> Tuple[Dict[int, int], Dict[int, str]]:
-    """
-    Ensambla y compila el Sistema Operativo LC-3.
-    Retorna:
-      (memory_map, symbol_map)
-      donde memory_map es {direccion: palabra_16bit} y symbol_map es {direccion: etiqueta}.
+    """Compila y genera la imagen binaria en memoria del Sistema Operativo LC-3.
+
+    Ensambla el código fuente de los manejadores TRAP (iniciando en x0200) y
+    construye la Tabla de Vectores de Trap (Trap Vector Table) en las direcciones
+    x0020 a x0025. Implementa almacenamiento en caché para evitar reensamblar
+    en ejecuciones sucesivas del simulador.
+
+    Returns:
+        Tuple[Dict[int, int], Dict[int, str]]: Tupla con dos mapas:
+            - memory_map: Diccionario {direccion_memoria: palabra_16bits} con el
+              contenido de la IVT y las instrucciones binarias de los manejadores.
+            - symbol_map: Diccionario {direccion_memoria: nombre_simbolo} para
+              resolución simbólica en desensamblado y depuración interactiva.
+
+    Raises:
+        AssemblyError: Si el código fuente LC3_OS_ASM contiene errores sintácticos
+            o símbolos no resueltos durante la fase de ensamblado.
     """
     global _CACHED_OS_IMAGE, _CACHED_OS_SYMBOLS
     if _CACHED_OS_IMAGE is not None:

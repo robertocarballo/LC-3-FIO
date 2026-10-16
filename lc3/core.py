@@ -1,10 +1,10 @@
-"""
-lc3_core.py - Definiciones y utilidades centrales de la ISA LC-3.
-Arquitectura pedagógica Little Computer 3 (Patt & Patel).
-"""
+"""Definición central de la ISA y constantes de hardware para la arquitectura LC-3.
 
-import sys
-
+Responsabilidad:
+    Proveer las constantes fundamentales de la arquitectura (tamaño de memoria, máscaras,
+    opcodes, códigos de condición PSR, vectores TRAP y registros MMIO), así como las funciones
+    puras de conversión de enteros de 16 bits, extensión de signo y desensamblado de instrucciones.
+"""
 # Tamaño de memoria de la LC-3: 2^16 palabras de 16 bits (65,536 palabras)
 MEMORY_SIZE = 65536
 
@@ -65,8 +65,18 @@ TRAP_NAMES = {
 
 
 def sign_extend(x: int, bit_count: int) -> int:
-    """
-    Extiende el bit de signo de un entero de 'bit_count' bits a un entero de Python.
+    """Extiende el bit de signo de un entero de 'bit_count' bits a la representación entera de Python.
+
+    Interpreta el bit más significativo (bit_count - 1) como bit de signo. Si está activo,
+    propaga unos hacia la izquierda completando el entero de tamaño arbitrario en Python
+    mediante aritmética de complemento a dos.
+
+    Args:
+        x (int): Valor entero sin signo que contiene los bits a interpretar.
+        bit_count (int): Número de bits significativos originales (e.g., 5 para imm5, 9 para PCoffset9).
+
+    Returns:
+        int: Entero con signo en representación nativa de Python.
     """
     if (x >> (bit_count - 1)) & 1:
         x |= (-1 << bit_count)
@@ -74,12 +84,32 @@ def sign_extend(x: int, bit_count: int) -> int:
 
 
 def to_uint16(val: int) -> int:
-    """Convierte cualquier entero a un valor de 16 bits sin signo (0 a 0xFFFF)."""
+    """Normaliza cualquier entero al rango canónico de 16 bits sin signo [0x0000, 0xFFFF].
+
+    Aplica la máscara MASK_16 (0xFFFF) truncando cualquier desbordamiento superior
+    o representación de signo negativo de Python.
+
+    Args:
+        val (int): Valor entero arbitrario de entrada.
+
+    Returns:
+        int: Entero normalizado en el rango [0, 65535].
+    """
     return val & MASK_16
 
 
 def to_int16(val: int) -> int:
-    """Convierte un valor de 16 bits sin signo a entero con signo (-32768 a 32767)."""
+    """Convierte una palabra de 16 bits sin signo a entero con signo [-32768, 32767].
+
+    Interpreta el bit 15 (SIGN_BIT_16 = 0x8000) como bit de signo. Si está activo,
+    resta 0x10000 para obtener el valor negativo correspondiente en complemento a dos.
+
+    Args:
+        val (int): Palabra de 16 bits sin signo (0x0000 a 0xFFFF).
+
+    Returns:
+        int: Entero con signo en el rango [-32768, 32767].
+    """
     val = val & MASK_16
     if val & SIGN_BIT_16:
         return val - 0x10000
@@ -87,7 +117,15 @@ def to_int16(val: int) -> int:
 
 
 def get_cc_name(cc: int) -> str:
-    """Devuelve la representación en cadena del código de condición actual."""
+    """Genera la representación textual de los Condition Codes activos en el procesador.
+
+    Args:
+        cc (int): Máscara de bits de condición (combinación de FL_NEG, FL_ZRO, FL_POS).
+
+    Returns:
+        str: Cadena con las letras de los flags activos ('N', 'Z', 'P', 'NZP', etc.)
+            o 'None' si no hay ningún flag establecido.
+    """
     parts = []
     if cc & FL_NEG:
         parts.append("N")
@@ -99,10 +137,21 @@ def get_cc_name(cc: int) -> str:
 
 
 def disassemble_instruction(instr: int, pc: int = 0, symbols: dict = None) -> str:
-    """
-    Desensambla una palabra de instrucción de 16 bits a su mnemónico assembly LC-3.
-    'pc' es la dirección de la instrucción (para resolver etiquetas relativas).
-    'symbols' es un diccionario opcional {direccion: nombre_etiqueta}.
+    """Desensambla una instrucción binaria de 16 bits a su mnemónico estándar LC-3.
+
+    Decodifica el opcode (bits [15:12]) y sus operandos asociados. Si se proporciona
+    una tabla de símbolos y una dirección PC de contexto, resuelve las direcciones relativas
+    (PCoffset9, PCoffset11) a los nombres de las etiquetas simbólicas.
+
+    Args:
+        instr (int): Palabra binaria de instrucción de 16 bits.
+        pc (int, optional): Dirección de memoria de la instrucción actual, utilizada para
+            calcular destinos relativos (PC + 1 + offset). Por defecto es 0.
+        symbols (dict, optional): Diccionario {direccion: nombre_etiqueta} para resolución simbólica.
+
+    Returns:
+        str: Representación formateada en mnemónico assembly o directiva '.FILL xXXXX'
+            si el opcode es reservado o no reconocido.
     """
     instr = to_uint16(instr)
     op = (instr >> 12) & 0xF

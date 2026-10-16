@@ -1,7 +1,9 @@
-"""
-lc3/cli.py - Interfaz de línea de comandos (CLI) principal para la arquitectura LC-3.
-Permite ensamblar código fuente .asm, ejecutar binarios .obj, depurar interactivamente
-y correr la suite de pruebas.
+"""Interfaz de línea de comandos (CLI) principal para la arquitectura LC-3.
+
+Responsabilidad:
+    Parsear argumentos y opciones de terminal para despachar la ejecución hacia los subcomandos
+    del sistema: ensamblado (asm), ejecución directa (run), depuración interactiva (debug),
+    suite de pruebas unitarias (test) e interfaz gráfica (gui).
 """
 
 import sys
@@ -13,7 +15,14 @@ from .debugger import LC3Debugger
 
 
 def cmd_asm(args):
-    """Subcomando para ensamblar código fuente LC-3."""
+    """Subcomando CLI: Ensambla un archivo fuente .asm a binario .obj, tabla .sym y volcado .hex.
+
+    Args:
+        args (argparse.Namespace): Argumentos parseados conteniendo source, output, hex y hex_file.
+
+    Returns:
+        int: Código de salida POSIX (0 si el ensamblado fue exitoso, 1 en caso de error).
+    """
     src = args.source
     if not os.path.isfile(src):
         print(f"Error: El archivo fuente '{src}' no existe.", file=sys.stderr)
@@ -44,7 +53,16 @@ def cmd_asm(args):
 
 
 def cmd_run(args):
-    """Subcomando para ejecutar un binario LC-3 en modo directo."""
+    """Subcomando CLI: Ejecuta un archivo binario .obj directamente en el simulador LC-3.
+
+    Si se provee un archivo con extensión .asm, lo compila automáticamente antes de ejecutarlo.
+
+    Args:
+        args (argparse.Namespace): Argumentos parseados conteniendo object_file, verbose, stats y max_steps.
+
+    Returns:
+        int: Código de salida POSIX (0 en ejecución limpia, 1 en error de carga o ejecución).
+    """
     obj = args.object_file
     if not os.path.isfile(obj):
         # Si el usuario pasó un .asm, ensamblarlo primero automáticamente
@@ -86,7 +104,14 @@ def cmd_run(args):
 
 
 def cmd_debug(args):
-    """Subcomando para depurar un binario LC-3 interactivamente."""
+    """Subcomando CLI: Inicia una sesión interactiva de depuración de consola estilo GDB.
+
+    Args:
+        args (argparse.Namespace): Argumentos parseados conteniendo object_file y sym.
+
+    Returns:
+        int: Código de salida POSIX (0 al salir normalmente, 1 si el binario no existe).
+    """
     obj = args.object_file
     if not os.path.isfile(obj):
         if obj.lower().endswith(".asm"):
@@ -119,7 +144,14 @@ def cmd_debug(args):
 
 
 def cmd_test(args):
-    """Subcomando para ejecutar la suite de pruebas unitarias."""
+    """Subcomando CLI: Ejecuta el runner automatizado de pruebas unitarias sobre el paquete tests/.
+
+    Args:
+        args (argparse.Namespace): Argumentos parseados de la invocación.
+
+    Returns:
+        int: Código de salida POSIX (0 si todas las pruebas pasan, 1 si alguna falla).
+    """
     import unittest
     tests_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tests")
     suite = unittest.defaultTestLoader.discover(tests_dir)
@@ -129,7 +161,14 @@ def cmd_test(args):
 
 
 def cmd_gui(args):
-    """Subcomando para iniciar la interfaz gráfica de usuario."""
+    """Subcomando CLI: Inicia la Interfaz Gráfica de Usuario (GUI) desarrollada en Tkinter.
+
+    Args:
+        args (argparse.Namespace): Argumentos parseados con archivo opcional a precargar.
+
+    Returns:
+        int: Código de salida POSIX (0 al cerrar la ventana principal).
+    """
     from .gui import LC3GUI
     app = LC3GUI(initial_file=args.file)
     app.mainloop()
@@ -137,6 +176,11 @@ def cmd_gui(args):
 
 
 def main():
+    """Punto de entrada principal para el procesamiento de argumentos y enrutamiento CLI.
+
+    Returns:
+        int: Código de salida devuelto por el subcomando ejecutado (0 o 1).
+    """
     parser = argparse.ArgumentParser(
         description="Conjunto de herramientas para la arquitectura LC-3 (Ensamblador y Simulador/VM)",
         formatter_class=argparse.RawDescriptionHelpFormatter,

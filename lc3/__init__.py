@@ -1,5 +1,8 @@
-"""
-Paquete modular para la arquitectura y simulador LC-3 (Little Computer 3).
+"""Paquete modular del núcleo y herramientas para la arquitectura LC-3.
+
+Responsabilidad:
+    Centralizar y exportar la API pública del proyecto: constantes de la ISA, ensamblador,
+    máquina virtual, depurador interactivo e interfaz gráfica de usuario.
 """
 
 from .core import (

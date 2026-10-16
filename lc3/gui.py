@@ -1,26 +1,41 @@
-"""
-lc3_gui.py - Interfaz Gráfica de Usuario (GUI) para el simulador y ensamblador LC-3.
-Desarrollada en Tkinter puro, con visualización de registros, flags CC, memoria,
-desensamblado con breakpoints interactivos, consola de E/S y editor integrado.
+"""Interfaz gráfica de usuario de escritorio en Tkinter para la arquitectura LC-3.
+
+Responsabilidad:
+    Proveer un entorno visual integrado con visualización reactiva de registros R0–R7, visor y
+    editor de memoria, árbol de desensamblado con breakpoints interactivos, terminal de E/S
+    para registros MMIO y editor de código assembly con ensamblado y carga directa al simulador.
 """
 
 import os
 import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-from typing import Optional, Dict, Set
+from typing import Optional, Set
 
 from .core import (
     MASK_16, MEMORY_SIZE,
     FL_POS, FL_ZRO, FL_NEG,
-    to_uint16, to_int16, get_cc_name, disassemble_instruction,
-    OP_JSR, OP_TRAP, TRAP_HALT, TRAP_GETC, TRAP_IN
+    to_uint16, to_int16, disassemble_instruction,
+    OP_JSR, OP_TRAP, TRAP_HALT
 )
 from .assembler import LC3Assembler, AssemblyError, assemble_file
 from .sim import LC3Simulator
 
 
 class LC3GUI(tk.Tk):
+    """Ventana principal y presentador visual de la suite de simulación y desarrollo LC-3.
+
+    Attributes:
+        sim (LC3Simulator): Instancia del motor de emulación bajo control.
+        orig_pc (int): Dirección inicial de memoria (.ORIG) del programa cargado.
+        disasm_base_addr (int): Dirección base para el renderizado del visor de desensamblado.
+        current_file (Optional[str]): Ruta del archivo .asm o .obj actualmente cargado.
+        breakpoints (Set[int]): Puntos de interrupción marcados visualmente.
+        is_running (bool): Bandera de estado del bucle temporizado de simulación.
+        sim_speed_ms (tk.IntVar): Intervalo de temporización entre instrucciones (en milisegundos).
+        waiting_for_input (bool): Indica si la simulación está suspendida aguardando entrada en KBSR.
+    """
+
     def __init__(self, initial_file: Optional[str] = None):
         super().__init__()
         self.title("Simulador y Ensamblador LC-3 (Little Computer 3)")
@@ -516,7 +531,11 @@ class LC3GUI(tk.Tk):
             messagebox.showerror("Error", f"No se encontró el ejemplo '{example_name}'.")
 
     def load_file(self, file_path: str):
-        """Carga un archivo .asm o .obj en el simulador y editor."""
+        """Carga un programa en formato .asm o .obj en el simulador y actualiza todas las vistas.
+
+        Args:
+            file_path (str): Ruta absoluta o relativa del archivo a abrir.
+        """
         self._on_pause()
         self.current_file = file_path
 
@@ -572,7 +591,7 @@ class LC3GUI(tk.Tk):
             self._on_assemble_editor_code()
 
     def _on_assemble_editor_code(self):
-        """Ensambla el texto escrito actualmente en la pestaña del editor."""
+        """Ensambla el código en memoria del editor integrado y lo carga directamente en el simulador."""
         code = self.txt_editor.get("1.0", tk.END).strip()
         if not code:
             messagebox.showwarning("Editor vacío", "No hay código en el editor para ensamblar.")
@@ -615,6 +634,7 @@ class LC3GUI(tk.Tk):
     # =========================================================================
 
     def _update_all_views(self):
+        """Sincroniza todos los paneles visuales (registros, desensamblado y memoria) con el simulador."""
         self._update_registers_view()
         self._update_disasm_view()
         self._update_memory_view()
@@ -743,7 +763,7 @@ class LC3GUI(tk.Tk):
         self._run_loop()
 
     def _run_loop(self):
-        """Bucle de ejecución temporizado para mantener la interfaz reactiva."""
+        """Ciclo cooperativo de ejecución temporizada para mantener la interfaz de usuario reactiva."""
         if not self.is_running:
             return
 
@@ -838,7 +858,7 @@ class LC3GUI(tk.Tk):
         self.lbl_status.config(text=f"Paso ejecutado. Próxima instrucción en x{self.sim.pc:04X}.")
 
     def _on_step_over(self):
-        """Pasa por encima de subrutinas o TRAPs (Step Over)."""
+        """Ejecuta una instrucción omitiendo la introspección paso a paso en subrutinas o TRAPs."""
         self._on_pause()
         instr = self.sim.mem_read(self.sim.pc)
         op = (instr >> 12) & 0xF

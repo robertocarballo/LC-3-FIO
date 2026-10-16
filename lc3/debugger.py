@@ -1,11 +1,11 @@
-"""
-lc3_debugger.py - Depurador interactivo de consola para la arquitectura LC-3.
-Permite ejecución paso a paso (step/next), breakpoints por dirección o etiqueta,
-inspección y modificación de registros y memoria, y desensamblado dinámico.
+"""Depurador interactivo de consola para la arquitectura LC-3.
+
+Responsabilidad:
+    Proveer una interfaz de depuración interactiva estilo GDB por consola, permitiendo ejecución
+    paso a paso (step), salto de subrutinas y TRAPs (step over), gestión de breakpoints por
+    dirección o etiqueta, e inspección o edición dinámica de registros y celdas de memoria.
 """
 
-import sys
-import re
 from typing import Optional, Set
 from .core import (
     MASK_16, to_uint16, to_int16, get_cc_name, disassemble_instruction,
@@ -15,6 +15,15 @@ from .sim import LC3Simulator
 
 
 class LC3Debugger:
+    """Controlador de depuración interactiva de consola para la máquina virtual LC-3.
+
+    Attributes:
+        sim (LC3Simulator): Instancia del simulador emulado bajo control.
+        orig_pc (int): Dirección base de inicio de ejecución (habitualmente x3000).
+        breakpoints (Set[int]): Conjunto de direcciones de memoria con puntos de interrupción activos.
+        last_cmd (str): Último comando de consola ingresado para permitir repetición con [Enter].
+    """
+
     def __init__(self, sim: LC3Simulator, start_pc: int = 0x3000):
         self.sim = sim
         self.orig_pc = start_pc
@@ -22,8 +31,17 @@ class LC3Debugger:
         self.last_cmd = ""
 
     def parse_address_or_symbol(self, token: str) -> Optional[int]:
-        """Parsea una dirección hexadecimal (x3000, 0x3000), decimal (#12288) o nombre de etiqueta."""
-        token = token.strip()
+        """Resuelve una dirección de memoria a partir de una etiqueta simbólica o literal numérico.
+
+        Acepta nombres de etiquetas cargadas en la tabla de símbolos del simulador,
+        así como formatos hexadecimales ('x3000', '0x3000', '3000') y decimales ('#12288').
+
+        Args:
+            token (str): Cadena ingresada por el usuario en la consola de depuración.
+
+        Returns:
+            Optional[int]: Dirección de 16 bits sin signo [0x0000, 0xFFFF] o None si no es válida.
+        """
         # Buscar en la tabla invertida de símbolos
         for addr, name in self.sim.symbols.items():
             if name.lower() == token.lower():
@@ -44,7 +62,7 @@ class LC3Debugger:
             return None
 
     def print_registers(self):
-        """Muestra los registros R0 a R7, PC, Códigos de Condición (CC) y la siguiente instrucción."""
+        """Muestra en consola el estado actual de los registros R0–R7, PC, CC y la instrucción en curso."""
         print("\n" + "=" * 62)
         print("  ESTADO DE REGISTROS LC-3")
         print("=" * 62)
@@ -68,7 +86,12 @@ class LC3Debugger:
         print("=" * 62 + "\n")
 
     def print_memory(self, start_addr: int, count: int = 8):
-        """Muestra un volcado de memoria con dirección, valor hexadecimal, decimal y representación ASCII."""
+        """Vuelca en consola una región contigua de memoria formateada en hex, decimal y ASCII.
+
+        Args:
+            start_addr (int): Dirección inicial de volcado.
+            count (int, optional): Cantidad de palabras consecutivas a mostrar. Por defecto 8.
+        """
         print(f"\n--- Memoria desde x{start_addr:04X} ({count} palabras) ---")
         for i in range(count):
             addr = (start_addr + i) & MASK_16
@@ -79,8 +102,14 @@ class LC3Debugger:
         print()
 
     def disassemble(self, start_addr: int, count: int = 10):
-        """Desensambla 'count' instrucciones a partir de start_addr."""
-        print(f"\n--- Desensamblado desde x{start_addr:04X} ({count} instrucciones) ---")
+        """Desensambla e imprime un bloque de instrucciones a partir de una dirección dada.
+
+        Resalta visualmente si la dirección coincide con el PC actual o si posee un breakpoint activo.
+
+        Args:
+            start_addr (int): Dirección inicial de desensamblado.
+            count (int, optional): Número de instrucciones a desensamblar. Por defecto 10.
+        """
         for i in range(count):
             addr = (start_addr + i) & MASK_16
             val = self.sim.mem_read(addr)
@@ -92,7 +121,7 @@ class LC3Debugger:
         print()
 
     def run_until_break_or_halt(self):
-        """Ejecuta instrucciones continuamente hasta alcanzar un breakpoint o HALT."""
+        """Ejecuta instrucciones continuamente hasta alcanzar un breakpoint, HALT o interrupción manual."""
         self.sim.running = True
         try:
             while self.sim.running:
@@ -111,7 +140,7 @@ class LC3Debugger:
             self.sim.running = False
 
     def step_over(self):
-        """Avanza una instrucción saltando subrutinas o TRAPs (Step Over)."""
+        """Avanza una instrucción omitiendo la introspección interna en subrutinas o TRAPs (Step Over)."""
         instr = self.sim.mem_read(self.sim.pc)
         op = (instr >> 12) & 0xF
         trapvect = instr & 0xFF
@@ -162,7 +191,7 @@ Comandos del Depurador LC-3:
 """)
 
     def interactive_loop(self):
-        """Bucle principal de la consola de depuración."""
+        """Inicia el bucle REPL interactivo de comandos de depuración en consola."""
         print("=" * 62)
         print("  DEPURADOR INTERACTIVO LC-3")
         print("  Escribe 'help' para ver los comandos disponibles.")

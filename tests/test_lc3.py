@@ -1,6 +1,9 @@
-"""
-test_lc3.py - Suite de pruebas unitarias y de integración para la arquitectura LC-3.
-Verifica ensamblador, instrucciones de máquina, registros, flags y simulación completa.
+"""Suite de pruebas unitarias e integrales para la arquitectura LC-3.
+
+Responsabilidad:
+    Verificar de forma automatizada las operaciones matemáticas de la ISA, la codificación
+    y detección de errores del ensamblador, el ciclo de ejecución de la máquina virtual,
+    el sondeo de periféricos MMIO y la ejecución completa de los programas de ejemplo.
 """
 
 import unittest
@@ -12,14 +15,14 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lc3.core import (
-    MASK_16, FL_POS, FL_ZRO, FL_NEG,
-    sign_extend, to_uint16, to_int16, disassemble_instruction
+    FL_ZRO, sign_extend, to_uint16, to_int16
 )
 from lc3.assembler import LC3Assembler, AssemblyError, assemble_file
 from lc3.sim import LC3Simulator
 from lc3.debugger import LC3Debugger
 
 class TestLC3Core(unittest.TestCase):
+    """Pruebas unitarias para funciones matemáticas y de formato de la ISA LC-3."""
     def test_sign_extend(self):
         # 5 bits: rango [-16, 15]
         self.assertEqual(sign_extend(0b01111, 5), 15)
@@ -41,6 +44,7 @@ class TestLC3Core(unittest.TestCase):
 
 
 class TestLC3Assembler(unittest.TestCase):
+    """Pruebas unitarias para el ensamblador de dos pasadas y reporte de errores."""
     def setUp(self):
         self.assembler = LC3Assembler()
 
@@ -131,6 +135,7 @@ class TestLC3Assembler(unittest.TestCase):
 
 
 class TestLC3Simulator(unittest.TestCase):
+    """Pruebas unitarias y de integración para la máquina virtual, MMIO y programas completos."""
     def setUp(self):
         self.sim = LC3Simulator()
 
