@@ -1,26 +1,31 @@
-"""
-lc3_os.py - Sistema Operativo y Rutinas de Servicio TRAP para la arquitectura LC-3.
-Implementa la Tabla de Vectores de Trap y el código assembly real del SO en memoria,
-emulando el sondeo (polling) sobre registros MMIO (KBSR, KBDR, DSR, DDR, MCR).
+"""Construye la imagen del SO educativo consumida por el simulador.
+
+El módulo posee el fuente assembly y las cachés de palabras/símbolos; delega
+su primera traducción en LC3Assembler y devuelve copias a bootstrap para construir la
+máquina. No ejecuta las rutinas: la CPU las alcanza por la tabla TRAP y ellas
+leen/escriben MMIO durante pasos normales de simulación.
 """
 
-from typing import Dict, Tuple, List
-from lc3_core import (
-    TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT,
-    MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR
+from typing import Dict, Tuple
+from lc3.domain.isa import (
+    TRAP_GETC,
+    TRAP_OUT,
+    TRAP_PUTS,
+    TRAP_IN,
+    TRAP_PUTSP,
+    TRAP_HALT,
 )
-from lc3_assembler import LC3Assembler
+from lc3.domain.assembler import LC3Assembler
 
-# Direcciones base de las rutinas de servicio del Sistema Operativo en memoria
-OS_START_ADDR = 0x0200
-
-# Código fuente en ensamblador del Sistema Operativo LC-3
+# Fuente propiedad del módulo: .ORIG determina las direcciones efectivas.
 LC3_OS_ASM = """
         .ORIG   x0200
 
 ; ====================================================================
 ; TRAP x20: GETC_HANDLER
 ; Lee un carácter del teclado sondeando KBSR (xFE00) hasta que haya tecla lista.
+; La CPU entra por vector x20 con retorno en R7; RET vuelve a ese invocador.
+; Consume KBDR al estar listo; modifica R0 y CC, no preserva el CC previo.
 ; Retorna el código ASCII en R0[7:0]. No hace eco en pantalla.
 ; ====================================================================
 GETC_HANDLER
@@ -36,6 +41,8 @@ OS_KBDR_PTR     .FILL   xFE02
 ; ====================================================================
 ; TRAP x21: OUT_HANDLER
 ; Sondea DSR (xFE04) hasta que la pantalla esté lista y escribe R0[7:0] en DDR (xFE06).
+; La CPU entra por x21; IN también llama por JSR. RET usa el R7 recibido.
+; Preserva R1 en OUT_SAVED_R1; no restaura CC y no modifica R0.
 ; ====================================================================
 OUT_HANDLER
         ST      R1, OUT_SAVED_R1    ; Preservar R1
@@ -48,6 +55,7 @@ OUT_POLL
 
 OS_DSR_PTR      .FILL   xFE04
 OS_DDR_PTR      .FILL   xFE06
+; Slot estático exclusivo de OUT: una llamada anidada a OUT lo sobrescribiría.
 OUT_SAVED_R1    .FILL   x0000
 
 
@@ -55,6 +63,9 @@ OUT_SAVED_R1    .FILL   x0000
 ; TRAP x22: PUTS_HANDLER
 ; Imprime una cadena terminada en nulo (x0000) apuntada por R0.
 ; Sondea DSR para cada carácter y lo envía a DDR.
+; Entrada por x22 o JSR desde IN/HALT; RET devuelve al R7 recibido.
+; CHAR_LOOP avanza palabras, POLL_DSR espera por carácter y FINISHED restaura
+; R0-R2 desde slots propios. La salida usa el byte bajo; CC no se preserva.
 ; ====================================================================
 PUTS_HANDLER
         ST      R0, PUTS_SAVED_R0   ; Preservar registros
@@ -81,6 +92,7 @@ PUTS_FINISHED
 
 OS_DSR_PTR_P    .FILL   xFE04
 OS_DDR_PTR_P    .FILL   xFE06
+; Slots estáticos propiedad de PUTS, compartidos por todas sus invocaciones.
 PUTS_SAVED_R0   .FILL   x0000
 PUTS_SAVED_R1   .FILL   x0000
 PUTS_SAVED_R2   .FILL   x0000
@@ -90,6 +102,9 @@ PUTS_SAVED_R2   .FILL   x0000
 ; TRAP x23: IN_HANDLER
 ; Muestra un mensaje en pantalla solicitando un carácter, sondea el teclado,
 ; hace eco del carácter en pantalla y lo retorna en R0.
+; Entrada por x23: guarda el R7 del usuario porque JSR PUTS/OUT lo reemplaza.
+; WAIT_KEY consume una tecla; restaura R1/R7 y RET devuelve R0 al usuario.
+; IN es dueña de sus slots estáticos y mensaje; no preserva CC.
 ; ====================================================================
 IN_HANDLER
         ST      R7, IN_SAVED_R7     ; Preservar R7 (dirección de retorno del usuario)
@@ -118,6 +133,10 @@ IN_PROMPT_MSG   .STRINGZ "Input a character: "
 ; ====================================================================
 ; TRAP x24: PUTSP_HANDLER
 ; Imprime una cadena empaquetada (2 caracteres por palabra de memoria).
+; Entrada por x24 con puntero en R0; RET usa R7 y restaura R0-R4.
+; LOOP termina por palabra cero o byte cero; POLL1/POLL2 esperan DSR.
+; SHIFT_LOOP acumula el byte alto y SHIFT_NO_BIT comparte el avance del bit.
+; DONE restaura slots propios estáticos; no se restaura CC.
 ; ====================================================================
 PUTSP_HANDLER
         ST      R0, PUTSP_SAVED_R0
@@ -178,6 +197,7 @@ PUTSP_DONE
 OS_DSR_PTR_SP   .FILL   xFE04
 OS_DDR_PTR_SP   .FILL   xFE06
 OS_MASK_00FF    .FILL   x00FF
+; Slots exclusivos de PUTSP; no forman una pila para llamadas reentrantes.
 PUTSP_SAVED_R0  .FILL   x0000
 PUTSP_SAVED_R1  .FILL   x0000
 PUTSP_SAVED_R2  .FILL   x0000
@@ -189,6 +209,10 @@ PUTSP_SAVED_R4  .FILL   x0000
 ; TRAP x25: HALT_HANDLER
 ; Imprime el mensaje de parada y desactiva el bit 15 del registro MCR (xFFFE)
 ; lo que detiene el reloj del procesador.
+; La CPU entra por x25; HALT guarda R7/R0/R1 en sus slots y llama PUTS.
+; Al escribir MCR la máquina se detiene y restaura su snapshot de HALT.
+; Las cargas y RET posteriores permanecen en la imagen pero el run normal
+; no los alcanza tras apagarse; no se promete un retorno normal al usuario.
 ; ====================================================================
 HALT_HANDLER
         ST      R7, HALT_SAVED_R7
@@ -211,6 +235,7 @@ HALT_HANDLER
 
 OS_MCR_PTR      .FILL   xFFFE
 MCR_CLOCK_MASK  .FILL   x7FFF
+; Slots estáticos de HALT, distintos del snapshot que posee el simulador.
 HALT_SAVED_R7   .FILL   x0000
 HALT_SAVED_R0   .FILL   x0000
 HALT_SAVED_R1   .FILL   x0000
@@ -219,17 +244,25 @@ HALT_MSG_TEXT   .STRINGZ "\\n*** HALT: Procesador detenido por instruccion TRAP 
         .END
 """
 
-# Caché para la imagen del Sistema Operativo
+# Cachés privadas del módulo: get_os_image entrega copias de ambos mapas.
 _CACHED_OS_IMAGE = None
 _CACHED_OS_SYMBOLS = None
 
 
 def get_os_image() -> Tuple[Dict[int, int], Dict[int, str]]:
-    """
-    Ensambla y compila el Sistema Operativo LC-3.
-    Retorna:
-      (memory_map, symbol_map)
-      donde memory_map es {direccion: palabra_16bit} y symbol_map es {direccion: etiqueta}.
+    """Devuelve palabras y símbolos del SO para la carga de la máquina.
+
+    ``LC3Simulator.load_os`` invoca esta función; la primera llamada delega
+    en ``LC3Assembler.assemble``, añade los vectores x20–x25 y conserva los
+    mapas en cachés del módulo. Las siguientes llamadas no reensamblan.
+
+    Returns:
+        Tuple[Dict[int, int], Dict[int, str]]: Copias independientes de mapas
+        dirección→palabra y dirección→etiqueta; mutarlas no cambia la caché.
+
+    Raises:
+        AssemblyError: El ensamblador rechaza el fuente integrado.
+        KeyError: Falta una etiqueta de servicio al construir los vectores.
     """
     global _CACHED_OS_IMAGE, _CACHED_OS_SYMBOLS
     if _CACHED_OS_IMAGE is not None:
@@ -247,12 +280,12 @@ def get_os_image() -> Tuple[Dict[int, int], Dict[int, str]]:
     # 2. Configurar la Tabla de Vectores de Trap (Trap Vector Table: x0000 - x00FF)
     # Específicamente los vectores x20 a x25 apuntando a sus manejadores correspondientes
     vector_table = {
-        TRAP_GETC:  symbols["GETC_HANDLER"],
-        TRAP_OUT:   symbols["OUT_HANDLER"],
-        TRAP_PUTS:  symbols["PUTS_HANDLER"],
-        TRAP_IN:    symbols["IN_HANDLER"],
+        TRAP_GETC: symbols["GETC_HANDLER"],
+        TRAP_OUT: symbols["OUT_HANDLER"],
+        TRAP_PUTS: symbols["PUTS_HANDLER"],
+        TRAP_IN: symbols["IN_HANDLER"],
         TRAP_PUTSP: symbols["PUTSP_HANDLER"],
-        TRAP_HALT:  symbols["HALT_HANDLER"],
+        TRAP_HALT: symbols["HALT_HANDLER"],
     }
 
     for vect, handler_addr in vector_table.items():
@@ -260,12 +293,12 @@ def get_os_image() -> Tuple[Dict[int, int], Dict[int, str]]:
 
     # Mapeo invertido de símbolos {direccion: nombre}
     symbol_map = {addr: name for name, addr in symbols.items()}
-    symbol_map[TRAP_GETC]  = "VEC_GETC (x20)"
-    symbol_map[TRAP_OUT]   = "VEC_OUT (x21)"
-    symbol_map[TRAP_PUTS]  = "VEC_PUTS (x22)"
-    symbol_map[TRAP_IN]    = "VEC_IN (x23)"
+    symbol_map[TRAP_GETC] = "VEC_GETC (x20)"
+    symbol_map[TRAP_OUT] = "VEC_OUT (x21)"
+    symbol_map[TRAP_PUTS] = "VEC_PUTS (x22)"
+    symbol_map[TRAP_IN] = "VEC_IN (x23)"
     symbol_map[TRAP_PUTSP] = "VEC_PUTSP (x24)"
-    symbol_map[TRAP_HALT]  = "VEC_HALT (x25)"
+    symbol_map[TRAP_HALT] = "VEC_HALT (x25)"
 
     _CACHED_OS_IMAGE = memory_map
     _CACHED_OS_SYMBOLS = symbol_map

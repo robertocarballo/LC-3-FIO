@@ -4,6 +4,9 @@
 ; R1 = NUM1 (multiplicando)
 ; R2 = NUM2 (multiplicador / contador de ciclo)
 ; R3 = Acumulador del producto
+; CLI, GUI y pruebas comienzan en x3000; no hay retorno de subrutina.
+; LOOP decrementa R2 hasta cero (el ejemplo usa 7); no valida signo/rango.
+; DONE publica el acumulador de 16 bits en RESULT antes de PUTS y HALT.
 ; ====================================================================
 
         .ORIG   x3000
@@ -32,6 +35,8 @@ DONE    ST      R3, RESULT
         HALT
 
 ; Datos
+; NUM1/NUM2 son entradas propias; RESULT es la salida persistente en memoria.
+; MSG sólo anuncia finalización: el programa no convierte ni imprime el producto.
 NUM1    .FILL   #6
 NUM2    .FILL   #7
 RESULT  .BLKW   #1

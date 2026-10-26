@@ -1,9 +1,9 @@
-"""
-lc3_core.py - Definiciones y utilidades centrales de la ISA LC-3.
-Arquitectura pedagógica Little Computer 3 (Patt & Patel).
-"""
+"""Define la ISA y las conversiones puras compartidas por las capas LC-3.
 
-import sys
+Ensamblador, SO, simulador, depurador, GUI y pruebas consumen estas constantes
+y funciones; el módulo no carga programas ni modifica el estado de la máquina.
+El desensamblado delega en las conversiones locales y sólo devuelve texto.
+"""
 
 # Tamaño de memoria de la LC-3: 2^16 palabras de 16 bits (65,536 palabras)
 MEMORY_SIZE = 65536
@@ -21,55 +21,61 @@ FL_ZRO = 1 << 1  # 010 (Z: Cero == 0)
 FL_NEG = 1 << 2  # 100 (N: Negativo < 0)
 
 # Opcodes (4 bits: bits [15:12])
-OP_BR   = 0x0   # 0000: Branch condicional
-OP_ADD  = 0x1   # 0001: Suma
-OP_LD   = 0x2   # 0010: Carga relativa a PC
-OP_ST   = 0x3   # 0011: Almacenamiento relativo a PC
-OP_JSR  = 0x4   # 0100: Salto a subrutina (JSR / JSRR)
-OP_AND  = 0x5   # 0101: AND lógico bit a bit
-OP_LDR  = 0x6   # 0110: Carga base + desplazamiento
-OP_STR  = 0x7   # 0111: Almacenamiento base + desplazamiento
-OP_RTI  = 0x8   # 1000: Retorno de interrupción
-OP_NOT  = 0x9   # 1001: NOT lógico (complemento a 1)
-OP_LDI  = 0xA   # 1010: Carga indirecta
-OP_STI  = 0xB   # 1011: Almacenamiento indirecto
-OP_JMP  = 0xC   # 1100: Salto incondicional / RET (JMP R7)
-OP_RES  = 0xD   # 1101: Reservado (no usado)
-OP_LEA  = 0xE   # 1110: Carga de dirección efectiva
-OP_TRAP = 0xF   # 1111: Llamada al sistema (TRAP)
+OP_BR = 0x0  # 0000: Branch condicional
+OP_ADD = 0x1  # 0001: Suma
+OP_LD = 0x2  # 0010: Carga relativa a PC
+OP_ST = 0x3  # 0011: Almacenamiento relativo a PC
+OP_JSR = 0x4  # 0100: Salto a subrutina (JSR / JSRR)
+OP_AND = 0x5  # 0101: AND lógico bit a bit
+OP_LDR = 0x6  # 0110: Carga base + desplazamiento
+OP_STR = 0x7  # 0111: Almacenamiento base + desplazamiento
+OP_RTI = 0x8  # 1000: Retorno de interrupción
+OP_NOT = 0x9  # 1001: NOT lógico (complemento a 1)
+OP_LDI = 0xA  # 1010: Carga indirecta
+OP_STI = 0xB  # 1011: Almacenamiento indirecto
+OP_JMP = 0xC  # 1100: Salto incondicional / RET (JMP R7)
+OP_RES = 0xD  # 1101: Reservado (no usado)
+OP_LEA = 0xE  # 1110: Carga de dirección efectiva
+OP_TRAP = 0xF  # 1111: Llamada al sistema (TRAP)
 
 # Vectores de TRAP estándar
-TRAP_GETC  = 0x20  # Lee un carácter del teclado (sin eco)
-TRAP_OUT   = 0x21  # Imprime un carácter a consola
-TRAP_PUTS  = 0x22  # Imprime cadena de caracteres (null-terminated)
-TRAP_IN    = 0x23  # Pide un carácter por teclado (con mensaje y eco)
+TRAP_GETC = 0x20  # Lee un carácter del teclado (sin eco)
+TRAP_OUT = 0x21  # Imprime un carácter a consola
+TRAP_PUTS = 0x22  # Imprime cadena de caracteres (null-terminated)
+TRAP_IN = 0x23  # Pide un carácter por teclado (con mensaje y eco)
 TRAP_PUTSP = 0x24  # Imprime cadena empaquetada (2 chars por palabra)
-TRAP_HALT  = 0x25  # Detiene la máquina
+TRAP_HALT = 0x25  # Detiene la máquina
 
 # Registros mapeados en memoria (Memory-Mapped I/O - MMIO)
 MR_KBSR = 0xFE00  # Keyboard Status Register
 MR_KBDR = 0xFE02  # Keyboard Data Register
-MR_DSR  = 0xFE04  # Display Status Register
-MR_DDR  = 0xFE06  # Display Data Register
-MR_MCR  = 0xFFFE  # Machine Control Register (bit 15: reloj)
+MR_DSR = 0xFE04  # Display Status Register
+MR_DDR = 0xFE06  # Display Data Register
+MR_MCR = 0xFFFE  # Machine Control Register (bit 15: reloj)
 
 # Nombres legibles de TRAP
 TRAP_NAMES = {
-    TRAP_GETC:  "GETC",
-    TRAP_OUT:   "OUT",
-    TRAP_PUTS:  "PUTS",
-    TRAP_IN:    "IN",
+    TRAP_GETC: "GETC",
+    TRAP_OUT: "OUT",
+    TRAP_PUTS: "PUTS",
+    TRAP_IN: "IN",
     TRAP_PUTSP: "PUTSP",
-    TRAP_HALT:  "HALT",
+    TRAP_HALT: "HALT",
 }
 
 
 def sign_extend(x: int, bit_count: int) -> int:
-    """
-    Extiende el bit de signo de un entero de 'bit_count' bits a un entero de Python.
+    """Extiende el signo para los consumidores de operandos de la ISA.
+
+    Args:
+        x: Campo entero; no se recortan previamente sus bits superiores.
+        bit_count: Anchura positiva del campo, proporcionada por el llamador.
+
+    Returns:
+        int: Valor con los bits superiores activados si el bit de signo era uno.
     """
     if (x >> (bit_count - 1)) & 1:
-        x |= (-1 << bit_count)
+        x |= -1 << bit_count
     return x
 
 
@@ -87,7 +93,7 @@ def to_int16(val: int) -> int:
 
 
 def get_cc_name(cc: int) -> str:
-    """Devuelve la representación en cadena del código de condición actual."""
+    """Devuelve N, Z y P activos, en ese orden, o ``None`` como texto."""
     parts = []
     if cc & FL_NEG:
         parts.append("N")
@@ -99,15 +105,24 @@ def get_cc_name(cc: int) -> str:
 
 
 def disassemble_instruction(instr: int, pc: int = 0, symbols: dict = None) -> str:
-    """
-    Desensambla una palabra de instrucción de 16 bits a su mnemónico assembly LC-3.
-    'pc' es la dirección de la instrucción (para resolver etiquetas relativas).
-    'symbols' es un diccionario opcional {direccion: nombre_etiqueta}.
+    """Devuelve texto de una palabra para vistas y comandos de depuración.
+
+    Delega el enmascarado y la extensión de signo en helpers de este módulo.
+    No consulta memoria ni modifica el mapa prestado por el invocador.
+
+    Args:
+        instr: Palabra que se recorta a 16 bits, sin validar su codificación.
+        pc: Dirección de la instrucción, no el PC ya incrementado.
+        symbols: Mapa opcional de dirección a nombre para destinos relativos.
+
+    Returns:
+        str: Mnemónico y operandos; el opcode reservado se muestra como .FILL.
     """
     instr = to_uint16(instr)
     op = (instr >> 12) & 0xF
 
     def fmt_addr(target_addr: int) -> str:
+        """Formatea un destino de este desensamblado usando el mapa capturado."""
         target_addr &= MASK_16
         if symbols and target_addr in symbols:
             return f"{symbols[target_addr]} (x{target_addr:04X})"
@@ -134,10 +149,14 @@ def disassemble_instruction(instr: int, pc: int = 0, symbols: dict = None) -> st
         z = (instr >> 10) & 1
         p = (instr >> 9) & 1
         cond = ""
-        if n: cond += "n"
-        if z: cond += "z"
-        if p: cond += "p"
-        if not cond: cond = "nop"
+        if n:
+            cond += "n"
+        if z:
+            cond += "z"
+        if p:
+            cond += "p"
+        if not cond:
+            cond = "nop"
         offset9 = sign_extend(instr & 0x1FF, 9)
         target = (pc + 1 + offset9) & MASK_16
         return f"BR{cond:<4} {fmt_addr(target)}"

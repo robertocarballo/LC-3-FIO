@@ -1,28 +1,56 @@
-"""
-lc3_debugger.py - Depurador interactivo de consola para la arquitectura LC-3.
-Permite ejecución paso a paso (step/next), breakpoints por dirección o etiqueta,
-inspección y modificación de registros y memoria, y desensamblado dinámico.
+"""Presentación de depuración textual invocada por cmd_debug.
+
+LC3Debugger posee breakpoints y último comando; delega ejecución/MMIO a la
+máquina y representación ISA al núcleo. Devuelve respuestas mediante consola
+y mutaciones explícitas de CPU, sin guardar archivos.
 """
 
-import sys
-import re
-from typing import Optional, Set
-from lc3_core import (
-    MASK_16, to_uint16, to_int16, get_cc_name, disassemble_instruction,
-    OP_JSR, OP_TRAP, TRAP_HALT
+from typing import Optional, Set, List
+from lc3.domain.isa import (
+    MASK_16,
+    to_uint16,
+    to_int16,
+    get_cc_name,
+    disassemble_instruction,
+    OP_JSR,
+    OP_TRAP,
+    TRAP_HALT,
 )
-from lc3_sim import LC3Simulator
+from lc3.domain.machine import LC3Simulator
 
 
 class LC3Debugger:
+    """Coordina comandos de usuario sobre una máquina prestada y breakpoints propios."""
+
     def __init__(self, sim: LC3Simulator, start_pc: int = 0x3000):
+        """Conserva máquina/origen del comando CLI e inicia sesión sin breakpoints."""
         self.sim = sim
         self.orig_pc = start_pc
         self.breakpoints: Set[int] = set()
         self.last_cmd = ""
+        self._input_buffer: Optional[List[int]] = None
+
+    def inject_key(self, ch: int) -> None:
+        """Encola una tecla desde key o el atajo de polling de interactive_loop.
+
+        La sesión posee la FIFO; sólo al inicializarla instala overrides de
+        disponibilidad/consumo en la máquina prestada. Una cola vacía ya
+        inicializada no reinstala callbacks. El consumidor vacío devuelve 0.
+        """
+        if self._input_buffer is None:
+            self._input_buffer = []
+            self.sim.has_input_fn = lambda: len(self._input_buffer) > 0
+            self.sim.input_fn = lambda: (
+                self._input_buffer.pop(0) if self._input_buffer else 0
+            )
+        self._input_buffer.append(ch)
 
     def parse_address_or_symbol(self, token: str) -> Optional[int]:
-        """Parsea una dirección hexadecimal (x3000, 0x3000), decimal (#12288) o nombre de etiqueta."""
+        """Resuelve para comandos una etiqueta sin distinguir caja o un número.
+
+        Devuelve dirección enmascarada o None si falla el parseo. Sin prefijo
+        interpreta hexadecimal, incluso para cadenas compuestas sólo por dígitos.
+        """
         token = token.strip()
         # Buscar en la tabla invertida de símbolos
         for addr, name in self.sim.symbols.items():
@@ -44,23 +72,31 @@ class LC3Debugger:
             return None
 
     def print_registers(self):
-        """Muestra los registros R0 a R7, PC, Códigos de Condición (CC) y la siguiente instrucción."""
+        """Imprime CPU y siguiente instrucción; mem_read puede activar efectos MMIO."""
         print("\n" + "=" * 62)
         print("  ESTADO DE REGISTROS LC-3")
         print("=" * 62)
         r = self.sim.reg
         for i in range(0, 8, 2):
             val1 = r[i]
-            val2 = r[i+1]
+            val2 = r[i + 1]
             s1 = to_int16(val1)
             s2 = to_int16(val2)
-            print(f"  R{i}: x{val1:04X} ({s1:>6})          R{i+1}: x{val2:04X} ({s2:>6})")
+            print(
+                f"  R{i}: x{val1:04X} ({s1:>6})          R{i+1}: x{val2:04X} ({s2:>6})"
+            )
 
         cc_str = get_cc_name(self.sim.cond)
         print("-" * 62)
-        pc_sym = f" ({self.sim.symbols[self.sim.pc]})" if self.sim.pc in self.sim.symbols else ""
-        print(f"  PC : x{self.sim.pc:04X}{pc_sym:<16} CC: [{cc_str}]  Instrucciones: {self.sim.instruction_count}")
-        
+        pc_sym = (
+            f" ({self.sim.symbols[self.sim.pc]})"
+            if self.sim.pc in self.sim.symbols
+            else ""
+        )
+        print(
+            f"  PC : x{self.sim.pc:04X}{pc_sym:<16} CC: [{cc_str}]  Instrucciones: {self.sim.instruction_count}"
+        )
+
         # Mostrar siguiente instrucción a ejecutar
         curr_instr = self.sim.mem_read(self.sim.pc)
         dis = disassemble_instruction(curr_instr, self.sim.pc, self.sim.symbols)
@@ -68,7 +104,7 @@ class LC3Debugger:
         print("=" * 62 + "\n")
 
     def print_memory(self, start_addr: int, count: int = 8):
-        """Muestra un volcado de memoria con dirección, valor hexadecimal, decimal y representación ASCII."""
+        """Imprime memoria para el comando m; usa mem_read con efectos MMIO reales."""
         print(f"\n--- Memoria desde x{start_addr:04X} ({count} palabras) ---")
         for i in range(count):
             addr = (start_addr + i) & MASK_16
@@ -79,8 +115,10 @@ class LC3Debugger:
         print()
 
     def disassemble(self, start_addr: int, count: int = 10):
-        """Desensambla 'count' instrucciones a partir de start_addr."""
-        print(f"\n--- Desensamblado desde x{start_addr:04X} ({count} instrucciones) ---")
+        """Imprime instrucciones y marcas PC/BP para d, leyendo mediante mem_read."""
+        print(
+            f"\n--- Desensamblado desde x{start_addr:04X} ({count} instrucciones) ---"
+        )
         for i in range(count):
             addr = (start_addr + i) & MASK_16
             val = self.sim.mem_read(addr)
@@ -92,7 +130,10 @@ class LC3Debugger:
         print()
 
     def run_until_break_or_halt(self):
-        """Ejecuta instrucciones continuamente hasta alcanzar un breakpoint o HALT."""
+        """Continúa para c hasta breakpoint/HALT; Ctrl+C pausa la máquina prestada.
+
+        Un breakpoint en PC actual detiene antes de ejecutar, también al reanudar.
+        """
         self.sim.running = True
         try:
             while self.sim.running:
@@ -111,7 +152,11 @@ class LC3Debugger:
             self.sim.running = False
 
     def step_over(self):
-        """Avanza una instrucción saltando subrutinas o TRAPs (Step Over)."""
+        """Ejecuta next hasta retorno o breakpoint, preservando breakpoints previos.
+
+        Añade temporalmente el retorno sólo si falta y lo retira en finally.
+        El caso simple llama step sin activar running; callbacks pueden fallar.
+        """
         instr = self.sim.mem_read(self.sim.pc)
         op = (instr >> 12) & 0xF
         trapvect = instr & 0xFF
@@ -140,6 +185,7 @@ class LC3Debugger:
             self.sim.step()
 
     def print_help(self):
+        """Responde al comando help mostrando aliases y sintaxis implementados."""
         print("""
 Comandos del Depurador LC-3:
   s, step               Ejecuta una sola instrucción (entra en subrutinas).
@@ -162,7 +208,12 @@ Comandos del Depurador LC-3:
 """)
 
     def interactive_loop(self):
-        """Bucle principal de la consola de depuración."""
+        """Lee comandos de cmd_debug hasta q/EOF/Ctrl+C y responde por consola.
+
+        Enter repite last_cmd; delega parseo, vistas y ejecución a métodos de esta
+        sesión. set modifica CPU/MMIO; key instala FIFO sólo al primer uso.
+        El atajo de carácter durante polling usa las direcciones SO existentes.
+        """
         print("=" * 62)
         print("  DEPURADOR INTERACTIVO LC-3")
         print("  Escribe 'help' para ver los comandos disponibles.")
@@ -211,14 +262,20 @@ Comandos del Depurador LC-3:
 
             elif cmd in ("b", "break"):
                 if not args:
-                    print("Uso: break <dirección o etiqueta> (ej: break x3005 o break LOOP)")
+                    print(
+                        "Uso: break <dirección o etiqueta> (ej: break x3005 o break LOOP)"
+                    )
                     continue
                 addr = self.parse_address_or_symbol(args[0])
                 if addr is None:
                     print(f"Dirección o etiqueta inválida: '{args[0]}'")
                 else:
                     self.breakpoints.add(addr)
-                    sym_info = f" ({self.sim.symbols[addr]})" if addr in self.sim.symbols else ""
+                    sym_info = (
+                        f" ({self.sim.symbols[addr]})"
+                        if addr in self.sim.symbols
+                        else ""
+                    )
                     print(f"Breakpoint añadido en x{addr:04X}{sym_info}.")
 
             elif cmd in ("del", "delete"):
@@ -238,7 +295,11 @@ Comandos del Depurador LC-3:
                 else:
                     print("Puntos de interrupción activos:")
                     for bp in sorted(self.breakpoints):
-                        sym_info = f" ({self.sim.symbols[bp]})" if bp in self.sim.symbols else ""
+                        sym_info = (
+                            f" ({self.sim.symbols[bp]})"
+                            if bp in self.sim.symbols
+                            else ""
+                        )
                         print(f"  - x{bp:04X}{sym_info}")
 
             elif cmd in ("r", "reg", "registers"):
@@ -274,7 +335,9 @@ Comandos del Depurador LC-3:
 
             elif cmd == "set":
                 if len(args) < 2:
-                    print("Uso: set r<0-7> <val>  O  set mem <addr> <val>  O  set pc <addr>")
+                    print(
+                        "Uso: set r<0-7> <val>  O  set mem <addr> <val>  O  set pc <addr>"
+                    )
                     continue
                 sub = args[0].lower()
                 if sub.startswith("r") and len(sub) == 2 and sub[1].isdigit():
@@ -284,7 +347,9 @@ Comandos del Depurador LC-3:
                         if val is not None:
                             self.sim.reg[r_idx] = to_uint16(val)
                             self.sim.update_flags(r_idx)
-                            print(f"R{r_idx} = x{self.sim.reg[r_idx]:04X} ({to_int16(self.sim.reg[r_idx])})")
+                            print(
+                                f"R{r_idx} = x{self.sim.reg[r_idx]:04X} ({to_int16(self.sim.reg[r_idx])})"
+                            )
                     else:
                         print("Registro inválido (R0 a R7).")
                 elif sub == "mem":
@@ -302,7 +367,9 @@ Comandos del Depurador LC-3:
                         self.sim.pc = val & MASK_16
                         print(f"PC = x{self.sim.pc:04X}")
                 else:
-                    print("Opción de set desconocida. Usa 'set r0 <val>', 'set mem <addr> <val>' o 'set pc <addr>'.")
+                    print(
+                        "Opción de set desconocida. Usa 'set r0 <val>', 'set mem <addr> <val>' o 'set pc <addr>'."
+                    )
 
             elif cmd == "reset":
                 self.sim.reset(self.orig_pc)
@@ -314,13 +381,15 @@ Comandos del Depurador LC-3:
                     print("Uso: key <carácter o código> (ej: key a o key 65)")
                     continue
                 arg = args[0]
-                ch = ord(arg) if len(arg) == 1 else (int(arg) & 0xFF if arg.isdigit() else ord(arg[0]))
-                if not hasattr(self.sim, "_cli_dbg_buf"):
-                    self.sim._cli_dbg_buf = []
-                    self.sim.has_input_fn = lambda: len(self.sim._cli_dbg_buf) > 0
-                    self.sim.input_fn = lambda: self.sim._cli_dbg_buf.pop(0) if self.sim._cli_dbg_buf else 0
-                self.sim._cli_dbg_buf.append(ch)
-                print(f"[Teclado] Carácter '{chr(ch)}' (ASCII {ch}) cargado al búfer de teclado.")
+                ch = (
+                    ord(arg)
+                    if len(arg) == 1
+                    else (int(arg) & 0xFF if arg.isdigit() else ord(arg[0]))
+                )
+                self.inject_key(ch)
+                print(
+                    f"[Teclado] Carácter '{chr(ch)}' (ASCII {ch}) cargado al búfer de teclado."
+                )
 
             else:
                 # Si el procesador está sondeando el teclado en el SO (GETC / IN) y se ingresa un solo carácter:
@@ -328,14 +397,19 @@ Comandos del Depurador LC-3:
                 is_polling_keyboard = curr_pc in (0x0200, 0x0201, 0x0228, 0x0229)
                 if is_polling_keyboard and len(cmd) == 1:
                     ch = ord(cmd)
-                    if not hasattr(self.sim, "_cli_dbg_buf"):
-                        self.sim._cli_dbg_buf = []
-                        self.sim.has_input_fn = lambda: len(self.sim._cli_dbg_buf) > 0
-                        self.sim.input_fn = lambda: self.sim._cli_dbg_buf.pop(0) if self.sim._cli_dbg_buf else 0
-                    self.sim._cli_dbg_buf.append(ch)
-                    print(f"[Teclado] Carácter '{cmd}' (ASCII {ch}) inyectado. Avanzando sondeo...")
-                    while self.sim.running and self.sim.pc in (0x0200, 0x0201, 0x0228, 0x0229):
+                    self.inject_key(ch)
+                    print(
+                        f"[Teclado] Carácter '{cmd}' (ASCII {ch}) inyectado. Avanzando sondeo..."
+                    )
+                    while self.sim.running and self.sim.pc in (
+                        0x0200,
+                        0x0201,
+                        0x0228,
+                        0x0229,
+                    ):
                         self.sim.step()
                     self.print_registers()
                 else:
-                    print(f"Comando desconocido: '{cmd}'. Escribe 'help' para ver la lista de comandos.")
+                    print(
+                        f"Comando desconocido: '{cmd}'. Escribe 'help' para ver la lista de comandos."
+                    )

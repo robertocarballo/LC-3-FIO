@@ -2,6 +2,9 @@
 ; echo.asm - Eco de teclado interactivo en LC-3
 ; Lee caracteres ingresados y los repite en pantalla hasta ingresar 'q'
 ; Demuestra TRAP IN (x23), TRAP OUT (x21) y comparación de caracteres
+; CLI o GUI comienzan en x3000; IN/PUTS/OUT delegan E/S al SO y MMIO.
+; ECHO_LOOP consume una tecla por vuelta y modifica R0-R2/CC; no es subrutina.
+; EXIT_ECHO recibe la comparación igual a 'q', imprime despedida y ejecuta HALT.
 ; ====================================================================
 
         .ORIG   x3000
@@ -35,6 +38,8 @@ EXIT_ECHO
         HALT
 
 ; Datos
+; Mensajes/constantes pertenecen al programa; CHAR_BUF conserva la tecla de
+; una vuelta mientras PUTS usa R0 como puntero. 'q' no pasa por ese eco adicional.
 WELCOME_MSG .STRINGZ "Programa Eco LC-3. Ingresa un caracter (presiona 'q' para salir):\n"
 ECHO_MSG    .STRINGZ "\n -> Has ingresado: "
 BYE_MSG     .STRINGZ "\nAdios!\n"

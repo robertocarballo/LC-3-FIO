@@ -1,6 +1,8 @@
 ; ====================================================================
 ; count.asm - Cuenta regresiva de '9' a '0' e imprime cada dígito
 ; Demuestra bucles, manipulación de código ASCII y llamadas OUT
+; CLI o GUI inician en x3000; OUT delega la salida al SO/MMIO y HALT detiene.
+; No retorna a un llamador: modifica R0-R2/CC y su slot SAVED_R0.
 ; ====================================================================
 
         .ORIG   x3000
@@ -12,6 +14,7 @@
         ; R0 = Carácter ASCII inicial ('9' = #57 o x39)
         LD      R0, CHAR_NINE
 
+; PRINT_LOOP emite dígito y espacio, incluido el espacio posterior a '0'.
 PRINT_LOOP
         OUT                     ; Imprime el carácter en R0
 
@@ -36,6 +39,7 @@ PRINT_LOOP
         HALT
 
 ; Constantes y variables
+; SAVED_R0 pertenece al bucle: preserva el dígito mientras OUT recibe el espacio.
 CHAR_NINE   .FILL   #57         ; ASCII de '9'
 SPACE_CHAR  .FILL   #32         ; ASCII de ' '
 NEWLINE     .FILL   #10         ; ASCII de '\n'

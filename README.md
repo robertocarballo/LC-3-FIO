@@ -2,36 +2,56 @@
 
 Este proyecto proporciona un entorno completo, pedagógico y funcional para la arquitectura **LC-3** desarrollado en **Python puro** (compatible con Python 3.8+ y probado en Python 3.14+). Incluye:
 
-1. **Interfaz Gráfica de Usuario (GUI)** (`lc3_gui.py`): entorno de escritorio completo con editor integrado, desensamblador en vivo, seguimiento de PC, puntos de interrupción interactivos, visor/editor de memoria y registros, consola de E/S y control de velocidad.
-2. **Sistema Operativo LC-3 en Memoria** (`lc3_os.py`): tabla de vectores de interrupción (`x0020`–`x0025`) y manejadores TRAP en lenguaje ensamblador que emulan fielmente el comportamiento de sondeo (polling) sobre registros MMIO (`KBSR`, `KBDR`, `DSR`, `DDR`, `MCR`).
-3. **Ensamblador de dos pasadas** (`lc3_assembler.py`): traduce código fuente `.asm` a binarios `.obj` en formato estándar big-endian y genera tablas de símbolos `.sym` y volcados `.hex`.
-4. **Simulador y Máquina Virtual** (`lc3_sim.py`): emula fielmente la arquitectura con ciclo fetch-decode-execute, memoria de 64K palabras, registros R0–R7, códigos de condición (N, Z, P), servicios de interrupción TRAP mediante hardware linkage y registros de E/S mapeados en memoria (MMIO).
-5. **Depurador interactivo de consola** (`lc3_debugger.py`): permite depuración paso a paso (`step`, `next`), puntos de interrupción por dirección o nombre de etiqueta, desensamblado dinámico e inspección y edición de memoria y registros.
+1. **Interfaz Gráfica de Usuario (GUI)** (`lc3/presentation/gui/`): raíz Tkinter y paneles de editor, desensamblado, registros/memoria y consola de E/S.
+2. **Sistema Operativo LC-3 en Memoria** (`lc3/domain/os_image.py`): tabla de vectores TRAP (`x0020`–`x0025`) y manejadores assembly que sondean registros MMIO (`KBSR`, `KBDR`, `DSR`, `DDR`, `MCR`).
+3. **Ensamblador de dos pasadas** (`lc3/domain/assembler.py`): traduce fuente en memoria; `lc3/infrastructure/program_files.py` lee y escribe `.obj` big-endian, `.sym` y `.hex`.
+4. **Simulador y Máquina Virtual** (`lc3/domain/machine.py`): estado CPU, ciclo fetch-decode-execute, 64K palabras, registros R0–R7, CC, TRAP y MMIO; recibe puerto de E/S e imagen SO desde `lc3/bootstrap.py`.
+5. **Depurador interactivo de consola** (`lc3/presentation/debugger.py`): `step`, `next`, breakpoints por dirección/etiqueta, desensamblado, edición de memoria/registros e inyección de teclado con cola propia.
 6. **CLI Unificada** (`lc3.py`): interfaz de comandos sencilla y amigable (lanza la GUI por defecto o permite subcomandos `asm`, `run`, `debug`, `test`, `gui`).
 7. **Programas de ejemplo** (`examples/`): programas listos para ensamblar y ejecutar.
-8. **Suite de pruebas unitarias** (`test_lc3.py`): 14 pruebas automáticas de la codificación, ejecución de instrucciones y rutinas del Sistema Operativo.
+8. **Suite de pruebas unitarias** (`test_lc3.py`): 15 pruebas automáticas de la codificación, ejecución de instrucciones y rutinas del Sistema Operativo.
 
 ---
 
 ## Estructura de Archivos
 
+```text
+lc3.py                         # Entrada CLI conservada; GUI por defecto
+lc3/
+  __init__.py                  # Namespace sin reexportaciones
+  bootstrap.py                 # Máquina real y ubicación estable de examples/
+  domain/                      # Sin Tkinter ni E/S física de archivos/terminal
+    isa.py                     # Constantes, conversiones y desensamblado
+    assembler.py               # Ensamblado en memoria
+    os_image.py                # Assembly del SO, imagen y caché
+    ports.py                   # Contrato HostIO
+    machine.py                 # CPU, memoria, MMIO, TRAP, step/run/reset
+  infrastructure/
+    program_files.py           # Pipeline ASM y formatos OBJ/SYM/HEX
+    terminal.py                # ConsoleIO POSIX/Windows
+  presentation/
+    cli.py                     # Comandos, mensajes y argumentos
+    debugger.py                # Sesión de depuración textual
+    gui/
+      app.py                   # Raíz, archivos, ejecución y coordinación de entrada
+      disassembly.py           # Vista de código y breakpoints
+      machine_state.py         # Vistas/editado de registros y memoria
+      console.py               # Widgets de E/S
+      editor.py                # Texto fuente
+test_lc3.py                    # Entrada de descubrimiento unittest
+tests/                         # Núcleo, ensamblador, simulador y programas; 15 tests
+examples/                      # hello/count/echo/mult, cada uno ASM/OBJ/SYM/HEX
+.local/                        # Documentación de trabajo local; no versionada
+  PURPOSE.md                   # Contrato raíz de capacidades conservadas
+  arquitectura.md              # Límites, propiedad del estado y ciclos
+  auditoria.md                 # Inventario, correspondencias y evidencia de poda
+  auditoria-bugs.md             # Bugs, errores, riesgos y limitaciones
+  c4.md                        # Vistas C4 de contexto, contenedores y componentes
 ```
-G:\Roberto\arquitectura de computadoras\lab3\
-├── lc3_gui.py          # Interfaz gráfica de escritorio moderna con Tkinter
-├── lc3.py              # CLI principal (gui, asm, run, debug, test)
-├── lc3_core.py         # Definición de la ISA (registros, flags, opcodes, desensamblador)
-├── lc3_os.py           # Imagen y código ensamblador del Sistema Operativo LC-3 (Vectores TRAP y MMIO)
-├── lc3_assembler.py    # Ensamblador de dos pasadas y generador de .obj / .sym / .hex
-├── lc3_sim.py          # Simulador / Máquina Virtual (CPU, ciclo de instrucción, TRAPs, MMIO)
-├── lc3_debugger.py     # Depurador interactivo en consola estilo GDB
-├── test_lc3.py         # Suite de pruebas unitarias automatizadas (14 tests)
-├── README.md           # Esta guía de uso y documentación técnica
-└── examples/           # Programas de prueba en ensamblador LC-3
-    ├── hello.asm       # Imprime "Hello, World!" con PUTS
-    ├── mult.asm        # Multiplicación de 6 * 7 por sumas sucesivas
-    ├── count.asm       # Bucle contador regresivo (de 9 a 0)
-    └── echo.asm        # Eco interactivo de teclado con salida al pulsar 'q'
-```
+
+Python 3.8+ y biblioteca estándar; Tkinter sólo se carga al solicitar la GUI. Las rutas de ejemplos parten del proyecto, no del directorio de trabajo. Los seis módulos raíz anteriores se sustituyeron sin aliases de imports. Para construir una máquina real desde Python, usa `lc3.bootstrap.create_simulator()`; las operaciones de archivo son funciones de `lc3.infrastructure.program_files`.
+
+La documentación Markdown de trabajo, salvo este README, se guarda en `.local/`, directorio excluido de Git: `PURPOSE.md`, `arquitectura.md`, `auditoria.md`, `auditoria-bugs.md` y `c4.md`. Esos archivos se conservan localmente y no forman parte del repositorio publicado. La reorganización preserva los fallos funcionales previos conocidos; no promete atomicidad de archivos ni añade políticas de validación.
 
 ---
 
@@ -50,9 +70,9 @@ G:\Roberto\arquitectura de computadoras\lab3\
   - **Acceso a memoria**: `LD` (relativo a PC), `LDI` (indirecto), `LDR` (base + desplazamiento), `LEA` (cargar dirección efectiva), `ST` (almacenar relativo a PC), `STI` (indirecto), `STR` (base + desplazamiento)
   - **Sistema y llamadas TRAP**:
     - `GETC` (`TRAP x20`): Lee un carácter del teclado sin eco.
-    - `OUT`  (`TRAP x21`): Imprime el carácter en R0.
+    - `OUT` (`TRAP x21`): Imprime el carácter en R0.
     - `PUTS` (`TRAP x22`): Imprime una cadena terminada en nulo apuntada por R0.
-    - `IN`   (`TRAP x23`): Solicita un carácter con mensaje y eco.
+    - `IN` (`TRAP x23`): Solicita un carácter con mensaje y eco.
     - `PUTSP`(`TRAP x24`): Imprime cadena empaquetada (2 caracteres por palabra).
     - `HALT` (`TRAP x25`): Detiene el procesador.
 - **E/S Mapeada en Memoria (MMIO)**:
@@ -66,15 +86,15 @@ G:\Roberto\arquitectura de computadoras\lab3\
 
 ## Sistema Operativo LC-3 y Emulación de Sondeo (Polling)
 
-A diferencia de emuladores que interceptan las llamadas TRAP directamente en código de alto nivel, este simulador implementa el **Sistema Operativo auténtico de la LC-3** cargado en la memoria de la máquina virtual (`lc3_os.py`):
+A diferencia de emuladores que interceptan siempre las llamadas TRAP en código de alto nivel, el modo predeterminado ejecuta el **SO educativo LC-3** en memoria (`lc3/domain/os_image.py`). También se conserva el modo nativo seleccionable con `os_traps_enabled=False`:
 
 1. **Tabla de Vectores TRAP (`x0020` – `x0025`)**:
-   - `x0020` (GETC)  $\rightarrow$ apunta al manejador en `x0200`
-   - `x0021` (OUT)   $\rightarrow$ apunta al manejador en `x0206`
-   - `x0022` (PUTS)  $\rightarrow$ apunta al manejador en `x020F`
-   - `x0023` (IN)    $\rightarrow$ apunta al manejador en `x0223`
+   - `x0020` (GETC) $\rightarrow$ apunta al manejador en `x0200`
+   - `x0021` (OUT) $\rightarrow$ apunta al manejador en `x0206`
+   - `x0022` (PUTS) $\rightarrow$ apunta al manejador en `x020F`
+   - `x0023` (IN) $\rightarrow$ apunta al manejador en `x0223`
    - `x0024` (PUTSP) $\rightarrow$ apunta al manejador en `x0246`
-   - `x0025` (HALT)  $\rightarrow$ apunta al manejador en `x0273`
+   - `x0025` (HALT) $\rightarrow$ apunta al manejador en `x0273`
 
 2. **Mecanismo de Linkage por Hardware**:
    - Al ejecutarse la instrucción `TRAP trapvect8`, la CPU almacena la dirección de retorno en `R7` (`R7 = PC`) y carga en el contador de programa la dirección del manejador leída desde la tabla de vectores: `PC = mem[trapvect8]`.
@@ -108,9 +128,11 @@ La forma más visual e interactiva de usar el simulador es a través de su inter
 ```powershell
 python lc3.py
 ```
-*(O también: `python lc3.py gui` o `python lc3.py gui examples/mult.asm`).*
+
+_(O también: `python lc3.py gui` o `python lc3.py gui examples/mult.asm`)._
 
 #### Características Principales de la GUI:
+
 - **Barra de control**: Botones para `Ejecutar (Run)`, `Pausar (Pause)`, `Paso a Paso (Step)`, `Paso Sobre Subrutinas (Step Over)` y `Reiniciar (Reset)`.
 - **Control de velocidad**: Deslizador para variar la velocidad de simulación entre 1 ms y 200 ms por instrucción (o máxima velocidad).
 - **Desensamblado en vivo**:
@@ -142,10 +164,12 @@ python lc3.py asm examples/hello.asm
 ```
 
 Opciones útiles:
+
 - `-o ruta.obj`: Especifica el nombre del archivo de salida.
 - `--hex`: Genera además un archivo de texto `.hex` con el volcado hexadecimal de memoria para inspección o Logisim.
 
 Ejemplo:
+
 ```powershell
 python lc3.py asm examples/mult.asm --hex
 ```
@@ -158,12 +182,15 @@ Ejecuta el programa directamente hasta que alcance una instrucción `HALT`:
 python lc3.py run examples/hello.obj
 ```
 
-> **Nota**: Si pasas un archivo `.asm` directamente a `run`, el CLI lo ensamblará automáticamente antes de ejecutarlo:
+> **Limitación conocida (BUG-001)**: `run` y `debug` interpretan un `.asm` existente como binario; la rama de autoensamblado sólo se alcanza cuando la ruta no existe. Ensambla primero y ejecuta el `.obj`:
+>
 > ```powershell
-> python lc3.py run examples/hello.asm
+> python lc3.py asm examples/hello.asm
+> python lc3.py run examples/hello.obj
 > ```
 
 Opciones adicionales:
+
 - `--stats`: Muestra estadísticas finales (número total de instrucciones ejecutadas, valores de registros y PC final).
 - `--max-steps N`: Limita la ejecución a un número máximo de ciclos de instrucción (útil para detectar bucles infinitos).
 
@@ -179,30 +206,31 @@ La consola de depuración cargará automáticamente la tabla de símbolos `.sym`
 
 #### Comandos del Depurador:
 
-| Comando | Alias | Descripción | Ejemplo |
-| :--- | :--- | :--- | :--- |
-| `step` | `s` | Ejecuta una sola instrucción (entra a subrutinas) | `s` |
-| `next` | `n` | Ejecuta la siguiente instrucción saltando subrutinas/TRAPs (Step Over) | `n` |
-| `continue` | `c` | Continúa la ejecución normal hasta un breakpoint o HALT | `c` |
-| `break <addr\|label>` | `b` | Establece un punto de interrupción en una dirección o etiqueta | `b DONE` o `b x3005` |
-| `delete <addr\|label>` | `del` | Elimina un punto de interrupción existente | `del DONE` |
-| `info b` | | Lista todos los puntos de interrupción activos | `info b` |
-| `registers` | `r` | Muestra los registros R0–R7 (en hex y dec), PC, CC y siguiente instrucción | `r` |
-| `memory <addr> [n]` | `m` | Vuelca `n` palabras de memoria con valores hex, dec y caracteres ASCII | `m x3000 8` |
-| `disasm [addr] [n]` | `d` | Desensambla `n` instrucciones a partir de una dirección o PC | `d x3000 10` |
-| `set r<0-7> <val>` | | Modifica el valor de un registro de la CPU | `set r1 #42` o `set r2 xFF` |
-| `set mem <addr> <val>`| | Modifica el contenido de una celda de memoria | `set mem x300C #10` |
-| `set pc <addr>` | | Modifica manualmente el contador de programa | `set pc x3000` |
-| `reset` | | Reinicia los registros y el PC a la dirección de origen (.ORIG) | `reset` |
-| `help` | `h` | Muestra el menú de ayuda con todos los comandos | `h` |
-| `quit` | `q` | Sale de la sesión de depuración | `q` |
-| `[Enter]` | | Al presionar Enter sin escribir texto, repite el último comando ejecutado | |
+| Comando                | Alias | Descripción                                                                | Ejemplo                     |
+| :--------------------- | :---- | :------------------------------------------------------------------------- | :-------------------------- |
+| `step`                 | `s`   | Ejecuta una sola instrucción (entra a subrutinas)                          | `s`                         |
+| `next`                 | `n`   | Ejecuta la siguiente instrucción saltando subrutinas/TRAPs (Step Over)     | `n`                         |
+| `continue`             | `c`   | Continúa la ejecución normal hasta un breakpoint o HALT                    | `c`                         |
+| `break <addr\|label>`  | `b`   | Establece un punto de interrupción en una dirección o etiqueta             | `b DONE` o `b x3005`        |
+| `delete <addr\|label>` | `del` | Elimina un punto de interrupción existente                                 | `del DONE`                  |
+| `info b`               |       | Lista todos los puntos de interrupción activos                             | `info b`                    |
+| `registers`            | `r`   | Muestra los registros R0–R7 (en hex y dec), PC, CC y siguiente instrucción | `r`                         |
+| `memory <addr> [n]`    | `m`   | Vuelca `n` palabras de memoria con valores hex, dec y caracteres ASCII     | `m x3000 8`                 |
+| `disasm [addr] [n]`    | `d`   | Desensambla `n` instrucciones a partir de una dirección o PC               | `d x3000 10`                |
+| `set r<0-7> <val>`     |       | Modifica el valor de un registro de la CPU                                 | `set r1 #42` o `set r2 xFF` |
+| `set mem <addr> <val>` |       | Modifica el contenido de una celda de memoria                              | `set mem x300C #10`         |
+| `set pc <addr>`        |       | Modifica manualmente el contador de programa                               | `set pc x3000`              |
+| `reset`                |       | Reinicia los registros y el PC a la dirección de origen (.ORIG)            | `reset`                     |
+| `help`                 | `h`   | Muestra el menú de ayuda con todos los comandos                            | `h`                         |
+| `quit`                 | `q`   | Sale de la sesión de depuración                                            | `q`                         |
+| `[Enter]`              |       | Al presionar Enter sin escribir texto, repite el último comando ejecutado  |                             |
 
 ---
 
 ## Suite de Pruebas Automatizadas
 
-El proyecto incluye 11 pruebas unitarias e integrales que verifican:
+El proyecto incluye 15 pruebas unitarias e integrales que verifican:
+
 - Codificación y extensión de signo de inmediatos.
 - Formatos de instrucciones y validación de rangos de saltos.
 - Detección de errores sintácticos y etiquetas no definidas.
@@ -215,7 +243,9 @@ Para ejecutar todas las pruebas:
 ```powershell
 python lc3.py test
 ```
+
 o bien:
+
 ```powershell
 python test_lc3.py
 ```

@@ -1,34 +1,73 @@
-"""
-lc3_sim.py - Máquina Virtual / Simulador para la arquitectura LC-3.
-Ejecuta binarios .obj estándar y proporciona ciclo fetch-decode-execute,
-manejo de registros, memoria mapeada (MMIO) y rutinas de TRAP.
+"""Dominio de CPU, memoria y MMIO invocado por CLI, depurador, GUI y pruebas.
+
+La máquina posee registros, memoria, símbolos y snapshots HALT; recibe el puerto
+HostIO y una imagen SO ya construida de bootstrap, sin acceder a archivos ni
+terminales. Conserva plantillas privadas del SO y delega E/S al puerto o a los
+callbacks instalados por presentación. Las excepciones de callbacks interrumpen
+los efectos en curso. Los breakpoints pertenecen a presentación.
 """
 
-import sys
-import os
-import time
-from typing import Optional, List, Dict
-from lc3_core import (
-    MEMORY_SIZE, MASK_16, SIGN_BIT_16, NUM_REGISTERS,
-    FL_POS, FL_ZRO, FL_NEG,
-    OP_BR, OP_ADD, OP_LD, OP_ST, OP_JSR, OP_AND, OP_LDR, OP_STR,
-    OP_RTI, OP_NOT, OP_LDI, OP_STI, OP_JMP, OP_RES, OP_LEA, OP_TRAP,
-    TRAP_GETC, TRAP_OUT, TRAP_PUTS, TRAP_IN, TRAP_PUTSP, TRAP_HALT,
-    MR_KBSR, MR_KBDR, MR_DSR, MR_DDR, MR_MCR,
-    sign_extend, to_uint16, to_int16, get_cc_name, disassemble_instruction
+from typing import Dict, Iterable, Optional, Tuple
+
+from lc3.domain.isa import (
+    MEMORY_SIZE,
+    MASK_16,
+    NUM_REGISTERS,
+    FL_POS,
+    FL_ZRO,
+    FL_NEG,
+    OP_BR,
+    OP_ADD,
+    OP_LD,
+    OP_ST,
+    OP_JSR,
+    OP_AND,
+    OP_LDR,
+    OP_STR,
+    OP_RTI,
+    OP_NOT,
+    OP_LDI,
+    OP_STI,
+    OP_JMP,
+    OP_RES,
+    OP_LEA,
+    OP_TRAP,
+    TRAP_GETC,
+    TRAP_OUT,
+    TRAP_PUTS,
+    TRAP_IN,
+    TRAP_PUTSP,
+    TRAP_HALT,
+    MR_KBSR,
+    MR_KBDR,
+    MR_DSR,
+    MR_DDR,
+    MR_MCR,
+    sign_extend,
+    to_uint16,
+    to_int16,
 )
-from lc3_os import get_os_image
-
-# Soporte para entrada de teclado no bloqueante en Windows
-try:
-    import msvcrt
-    HAS_MSVCRT = True
-except ImportError:
-    HAS_MSVCRT = False
+from lc3.domain.ports import HostIO
 
 
 class LC3Simulator:
-    def __init__(self):
+    """Mantiene estado LC-3 y ejecuta ISA educativa, TRAP nativo o SO en memoria.
+
+    Posee copias privadas de la imagen recibida; os_symbols es un mapa público
+    independiente que load_os sustituye al recargar. Los cuatro callbacks son
+    overrides opcionales de presentación y sus errores se propagan.
+    """
+
+    def __init__(self, io: HostIO, os_image: Tuple[Dict[int, int], Dict[int, str]]):
+        """Inicializa CPU/MMIO y carga una copia de la imagen SO proporcionada.
+
+        Bootstrap entrega el puerto y los mapas de palabras/símbolos del SO.
+        La máquina no obtiene imágenes ni instala una lectura bloqueante como
+        input_fn; conserva el puerto para las operaciones sin override.
+        """
+        self._io = io
+        self._os_memory_template = dict(os_image[0])
+        self._os_symbols_template = dict(os_image[1])
         self.memory = [0] * MEMORY_SIZE
         self.reg = [0] * NUM_REGISTERS
         self.pc = 0x3000
@@ -36,7 +75,6 @@ class LC3Simulator:
         self.running = False
         self.instruction_count = 0
         self.symbols: Dict[int, str] = {}  # Mapeo {direccion: nombre_etiqueta}
-        self.breakpoints = set()
 
         # Callbacks opcionales para interfaz gráfica o redirección de E/S
         self.output_fn = None
@@ -58,25 +96,32 @@ class LC3Simulator:
         self.load_os()
 
     def load_os(self):
-        """Carga la imagen del Sistema Operativo LC-3 en memoria y registra sus símbolos."""
-        os_mem, os_sym = get_os_image()
-        self.os_symbols = os_sym
-        for addr, val in os_mem.items():
+        """Recarga plantillas propias sin sobrescribir etiquetas existentes.
+
+        Constructor y reset copian palabras directamente y crean os_symbols
+        fresco; mutar ese mapa público no altera la siguiente recarga. Sólo
+        añade nombres a symbols cuando la dirección todavía no tiene etiqueta.
+        """
+        self.os_symbols = dict(self._os_symbols_template)
+        for addr, val in self._os_memory_template.items():
             self.memory[addr] = val
-        for addr, name in os_sym.items():
+        for addr, name in self.os_symbols.items():
             if addr not in self.symbols:
                 self.symbols[addr] = name
 
     def _output_text(self, text: str):
-        """Envía texto a la consola o al callback configurado de la GUI."""
-        if self.output_fn:
+        """Entrega texto desde TRAP/DDR a output_fn o al puerto del anfitrión."""
+        if self.output_fn is not None:
             self.output_fn(text)
         else:
-            sys.stdout.write(text)
-            sys.stdout.flush()
+            self._io.write_text(text)
 
     def reset(self, start_pc: int = 0x3000):
-        """Reinicia el estado del procesador conservando la memoria y recargando el SO."""
+        """Reinicia CPU/MMIO y snapshots, conserva memoria de usuario y símbolos.
+
+        CLI/GUI/depurador indican el PC inicial; sólo recarga SO si
+        os_traps_enabled. No elimina callbacks ni tablas de símbolos completas.
+        """
         self.reg = [0] * NUM_REGISTERS
         self.pc = start_pc & MASK_16
         self.cond = FL_ZRO
@@ -89,56 +134,24 @@ class LC3Simulator:
         if self.os_traps_enabled:
             self.load_os()
 
-    def load_obj(self, filename: str) -> int:
+    def load_words(self, orig_addr: int, words: Iterable[int]) -> int:
+        """Carga palabras directamente para adaptadores y editor, sin efectos MMIO.
+
+        Consume words una vez, enmascara cada palabra y envuelve las direcciones
+        a 16 bits. El origen válido, de 0 a 65535, procede del ensamblador o de
+        una cabecera OBJ; no se valida de nuevo. No resetea CPU ni símbolos y
+        fija PC al origen después de consumir el iterable.
+
+        Returns:
+            int: Origen recibido, también para una secuencia vacía.
         """
-        Carga un archivo binario .obj en la memoria.
-        El primer entero de 16 bits en big-endian es la dirección de origen (.ORIG).
-        Retorna la dirección de origen.
-        """
-        with open(filename, "rb") as f:
-            data = f.read()
-
-        if len(data) < 2:
-            raise ValueError(f"El archivo {filename} está vacío o es inválido.")
-
-        # Dirección de origen
-        orig = int.from_bytes(data[0:2], byteorder="big")
-        address = orig
-
-        for i in range(2, len(data), 2):
-            if i + 1 < len(data):
-                val = int.from_bytes(data[i:i+2], byteorder="big")
-                self.memory[address & MASK_16] = val
-                address += 1
-
-        self.pc = orig
-        return orig
-
-    def load_sym(self, filename: str):
-        """Carga una tabla de símbolos .sym para visualización en desensamblado."""
-        if not os.path.exists(filename):
-            return
-        with open(filename, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                if line.startswith("//"):
-                    line = line.lstrip("/").strip()
-                if not line or line.startswith("---") or "Symbol Name" in line or "Scope" in line:
-                    continue
-                parts = line.split()
-                if len(parts) >= 2:
-                    name = parts[0]
-                    addr_str = parts[1].replace("x", "").replace("X", "")
-                    try:
-                        addr = int(addr_str, 16)
-                        self.symbols[addr] = name
-                    except ValueError:
-                        pass
+        for offset, word in enumerate(words):
+            self.memory[(orig_addr + offset) & MASK_16] = word & MASK_16
+        self.pc = orig_addr
+        return orig_addr
 
     def update_flags(self, reg_num: int):
-        """Actualiza los códigos de condición (N, Z, P) según el valor en el registro reg_num."""
+        """Actualiza cond de esta CPU desde reg_num; step y editores lo invocan."""
         val = to_int16(self.reg[reg_num])
         if val == 0:
             self.cond = FL_ZRO
@@ -148,55 +161,52 @@ class LC3Simulator:
             self.cond = FL_NEG
 
     def _read_char(self) -> int:
-        """Lee un carácter del usuario sin esperar salto de línea si es posible."""
-        if self.input_fn:
+        """Devuelve carácter para TRAP nativo desde input_fn o HostIO.read_char.
+
+        El puerto puede bloquear; la lectura MMIO sin callback usa read_key,
+        cuya capacidad puede no estar disponible, en lugar de esta ruta.
+        """
+        if self.input_fn is not None:
             return self.input_fn()
-        if HAS_MSVCRT:
-            ch = msvcrt.getch()
-            # En Windows con msvcrt, \r (Enter) suele devolverse como 13
-            if ch == b'\r':
-                return 10  # \n estándar
-            return ord(ch)
-        else:
-            ch = sys.stdin.read(1)
-            return ord(ch) if ch else 0
+        return self._io.read_char()
 
     def mem_read(self, address: int) -> int:
-        """Lectura de memoria con intercepción de registros MMIO."""
+        """Lee palabra y ejecuta efectos MMIO para step y consumidores de memoria.
+
+        KBSR consulta callback o puerto, almacena estado y luego notifica. Un
+        callback instalado prevalece aunque no tenga entrada; None del puerto
+        equivale a no disponible. KBDR consume input_fn (debe devolver int) o
+        read_key (None conserva dato); guarda byte, limpia KBSR y notifica True.
+        DSR devuelve siempre x8000. Las excepciones se propagan sin completar
+        efectos restantes.
+        """
         address &= MASK_16
 
         # Registro de estado de teclado (KBSR)
         if address == MR_KBSR:
-            has_input = False
-            if self.has_input_fn:
+            if self.has_input_fn is not None:
                 has_input = bool(self.has_input_fn())
-                self.memory[MR_KBSR] = 0x8000 if has_input else 0x0000
-            elif HAS_MSVCRT:
-                if msvcrt.kbhit():
-                    has_input = True
-                    self.memory[MR_KBSR] = 0x8000
-                else:
-                    self.memory[MR_KBSR] = 0x0000
-                    time.sleep(0.001)
             else:
-                self.memory[MR_KBSR] = 0x0000
+                has_input = bool(self._io.poll_key())
+            self.memory[MR_KBSR] = 0x8000 if has_input else 0x0000
 
-            if getattr(self, "kbsr_poll_fn", None):
+            if self.kbsr_poll_fn is not None:
                 self.kbsr_poll_fn(has_input)
 
             return self.memory[MR_KBSR]
 
         # Registro de datos de teclado (KBDR)
         elif address == MR_KBDR:
-            if self.input_fn:
+            if self.input_fn is not None:
                 ch = self.input_fn()
                 self.memory[MR_KBDR] = ch & 0xFF
-            elif HAS_MSVCRT:
-                ch = self._read_char()
-                self.memory[MR_KBDR] = ch & 0xFF
+            else:
+                ch = self._io.read_key()
+                if ch is not None:
+                    self.memory[MR_KBDR] = ch & 0xFF
             val = self.memory[MR_KBDR]
             self.memory[MR_KBSR] = 0x0000  # Limpiar bandera de teclado al leer datos
-            if getattr(self, "kbsr_poll_fn", None):
+            if self.kbsr_poll_fn is not None:
                 self.kbsr_poll_fn(True)
             return val
 
@@ -206,7 +216,12 @@ class LC3Simulator:
         return self.memory[address]
 
     def mem_write(self, address: int, val: int):
-        """Escritura de memoria con intercepción de registros MMIO."""
+        """Escribe palabra enmascarada; step y editores comparten efectos MMIO.
+
+        DDR emite byte bajo antes de almacenar. MCR sin reloj detiene CPU,
+        restaura registros/CC del snapshot HALT y lo limpia antes de almacenar;
+        no restaura PC. Si falla la emisión DDR no se almacena la palabra.
+        """
         address &= MASK_16
         val &= MASK_16
 
@@ -228,7 +243,12 @@ class LC3Simulator:
             self.memory[address] = val
 
     def handle_trap(self, trapvect: int):
-        """Ejecuta una rutina de servicio del sistema (TRAP)."""
+        """Atiende TRAP nativo o fallback de vector cero, invocado por step.
+
+        GETC/IN consumen entrada; OUT/PUTS/PUTSP emiten; HALT para running.
+        Un vector genérico no nulo cambia PC; cero emite diagnóstico por el
+        puerto, separado de output_fn. Las rutinas nativas no recalculan CC.
+        """
         if trapvect == TRAP_GETC:
             ch = self._read_char()
             self.reg[0] = ch & 0xFF
@@ -271,7 +291,9 @@ class LC3Simulator:
             self._output_text("".join(chars))
 
         elif trapvect == TRAP_HALT:
-            self._output_text("\n*** HALT: Procesador detenido por instrucción TRAP x25 ***\n")
+            self._output_text(
+                "\n*** HALT: Procesador detenido por instrucción TRAP x25 ***\n"
+            )
             self.running = False
 
         else:
@@ -280,12 +302,17 @@ class LC3Simulator:
             if vector_addr != 0:
                 self.pc = vector_addr
             else:
-                print(f"[Aviso] TRAP x{trapvect:02X} no implementado.")
+                self._io.report(f"[Aviso] TRAP x{trapvect:02X} no implementado.")
 
     def step(self) -> bool:
-        """
-        Ejecuta un solo ciclo de instrucción (Fetch -> Decode -> Execute).
-        Retorna False si el procesador se detiene, True si continúa.
+        """Ejecuta fetch/decode/execute incluso con running=False y cuenta el paso.
+
+        Invocado por run, depurador y GUI; delega memoria/MMIO y TRAP. Guarda
+        R7 antes del snapshot HALT. RTI es no-op educativo; opcode reservado
+        diagnostica por el puerto y detiene. Los callbacks pueden propagar errores.
+
+        Returns:
+            bool: Estado running posterior, no indicador de si hubo instrucción.
         """
         # Fetch
         instr = self.mem_read(self.pc)
@@ -412,25 +439,36 @@ class LC3Simulator:
             pass
 
         elif op == OP_RES:
-            print(f"[Error] Código de operación reservado/inválido en x{curr_pc:04X} (x{instr:04X})")
+            self._io.report(
+                f"[Error] Código de operación reservado/inválido en x{curr_pc:04X} (x{instr:04X})"
+            )
             self.running = False
 
         self.instruction_count += 1
         return self.running
 
     def run(self, max_steps: Optional[int] = None) -> int:
-        """
-        Ejecuta el programa de forma continua hasta HALT o hasta alcanzar max_steps.
-        Retorna el número de instrucciones ejecutadas.
+        """Ejecuta desde PC actual hasta parada o límite acumulado de instrucciones.
+
+        CLI/tests lo invocan; activa running y delega cada ciclo a step.
+        max_steps=None o 0 no limita; alcanzar límite conserva running y CPU.
+        Ctrl+C emite diagnóstico por el puerto y desactiva running.
+
+        Returns:
+            int: Contador acumulado, no sólo pasos de esta llamada.
         """
         self.running = True
         try:
             while self.running:
                 if max_steps and self.instruction_count >= max_steps:
-                    print(f"\n[Aviso] Se alcanzó el límite máximo de pasos ({max_steps}).")
+                    self._io.report(
+                        f"\n[Aviso] Se alcanzó el límite máximo de pasos ({max_steps})."
+                    )
                     break
                 self.step()
         except KeyboardInterrupt:
-            print("\n[Interrupción] Ejecución pausada por el usuario (Ctrl+C).")
+            self._io.report(
+                "\n[Interrupción] Ejecución pausada por el usuario (Ctrl+C)."
+            )
             self.running = False
         return self.instruction_count
