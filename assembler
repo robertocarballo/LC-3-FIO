@@ -1,0 +1,720 @@
+from __future__ import annotations
+
+import argparse
+import ast
+import re
+import sys
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
+
+
+class AssemblerError(ValueError):
+    pass
+
+
+def _object_bytes(words: Sequence[int]) -> bytes:
+    return b"".join((word & 0xFFFF).to_bytes(2, byteorder="big") for word in words)
+
+
+@dataclass
+class ProgramEntry:
+    address: int
+    kind: str
+    value: object | None = None
+    text: str | None = None
+    lineno: int = 0
+
+
+def _parse_int(token: str) -> int:
+    token = token.strip()
+    if not token:
+        raise ValueError("token vacío")
+    lower = token.lower()
+    if lower.startswith("0x"):
+        return int(token, 16)
+    if lower.startswith("0b"):
+        return int(token, 2)
+    if lower.startswith("x") and len(token) > 1:
+        return int(token[1:], 16)
+    if lower.startswith("#"):
+        return int(token[1:])
+    if lower.startswith("b") and len(token) > 1:
+        return int(token[1:], 2)
+    return int(token, 10)
+
+
+def _split_operands(value: str) -> list[str]:
+    value = value.strip()
+    if not value:
+        return []
+    return [part for part in re.split(r"\s+|,", value) if part]
+
+
+def _parse_register(token: str) -> int:
+    token = token.strip().upper()
+    if not token.startswith("R"):
+        raise AssemblerError(f"Registro inválido: {token!r}")
+    digits = token[1:]
+    if not digits.isdigit():
+        raise AssemblerError(f"Registro inválido: {token!r}")
+    reg = int(digits)
+    if reg < 0 or reg > 7:
+        raise AssemblerError(f"Registro fuera de rango: {token!r}")
+    return reg
+
+
+def _cond_mask_from_mnemonic(mnemonic: str) -> int:
+    m = mnemonic.upper()
+    if m == "BR":
+        return 0b111
+    if not m.startswith("BR"):
+        raise AssemblerError(f"No es una instrucción BR: {mnemonic}")
+    cond = m[2:]
+    if not cond:
+        return 0b111
+    mask = 0
+    if "N" in cond:
+        mask |= 0b100
+    if "Z" in cond:
+        mask |= 0b010
+    if "P" in cond:
+        mask |= 0b001
+    if mask == 0:
+        raise AssemblerError(f"Condición BR inválida: {mnemonic}")
+    return mask
+
+
+@dataclass
+class LinkedSource:
+    path: Path
+    source: str
+    symbols: Dict[str, int | None]
+    origin: int
+    size: int
+    external_references: List[str]
+    external_targets: Dict[str, tuple[Path, str]] = field(default_factory=dict)
+    base: int = 0
+
+
+class Assembler:
+    def __init__(
+        self,
+        external_addresses: Optional[Dict[str, int]] = None,
+        origin_override: Optional[int] = None,
+    ) -> None:
+        self.external_addresses = dict(external_addresses or {})
+        self.origin_override = origin_override
+        self.symbols: Dict[str, int | None] = {}
+        self.externals: set[str] = set()
+        self.external_references: List[str] = []
+        self.entries: List[ProgramEntry] = []
+        self.pc = origin_override or 0
+        self.has_origin = origin_override is not None
+        self.origin: int | None = origin_override
+
+    def reset(self) -> None:
+        self.symbols = {}
+        self.externals = set()
+        self.external_references = []
+        self.entries = []
+        self.pc = self.origin_override or 0
+        self.has_origin = self.origin_override is not None
+        self.origin = self.origin_override
+
+    def assemble(self, source: str) -> List[int]:
+        self.reset()
+        self._pass1(source)
+        self._pass2()
+        return [entry.value for entry in self.entries if entry.value is not None]
+
+    def assemble_string(self, source: str, output_format: str = "hex") -> str | bytes:
+        words = self.assemble(source)
+        if self.origin is None:
+            raise AssemblerError("Falta .ORIG en el archivo.")
+        words.insert(0, self.origin)
+        if output_format.lower() == "obj":
+            return _object_bytes(words)
+        if output_format.lower() == "bin":
+            return " ".join(f"{w & 0xFFFF:016b}" for w in words)
+        if output_format.lower() == "dec":
+            return " ".join(str(w & 0xFFFF) for w in words)
+        if output_format.lower() == "hex":
+            return " ".join(f"{w & 0xFFFF:04X}" for w in words)
+        raise AssemblerError(f"Formato de salida inválido: {output_format}")
+
+    def assemble_file(self, path: str | Path, output_format: str = "hex") -> str | bytes:
+        text = Path(path).read_text(encoding="utf-8")
+        return self.assemble_string(text, output_format)
+
+    def _pass1(self, source: str) -> None:
+        lines = source.splitlines()
+        valid_mnemonics = {
+            "ADD", "AND", "BR", "BRN", "BRZ", "BRP", "BRNZ", "BRNP", "BRZP", "BRNZP",
+            "HALT", "JSR", "JSRR", "JMP", "LD", "LDI", "LDR", "LEA", "NOT", "RET",
+            "ST", "STI", "STR", "TRAP", "NOP", "MOV", "CMP", "GETC", "OUT", "PUTS", "IN"
+        }
+
+        for lineno, raw in enumerate(lines, start=1):
+            line = raw.split(";", 1)[0].strip()
+            if not line:
+                continue
+
+            remainder = line
+            label = None
+            first_token = line.split(None, 1)[0]
+            if ":" in first_token and not line.startswith("."):
+                label_text, _ = first_token.split(":", 1)
+                remainder = line[len(first_token):].strip()
+                label = label_text.strip()
+            elif not line.startswith("."):
+                tokens = line.split(None, 1)
+                if len(tokens) >= 2 and tokens[0].upper() not in valid_mnemonics:
+                    label = tokens[0].strip()
+                    remainder = tokens[1].strip()
+                elif len(tokens) == 1:
+                    candidate = tokens[0].strip()
+                    if candidate and candidate.upper() not in valid_mnemonics:
+                        label = candidate
+                        remainder = ""
+
+            if label:
+                self.symbols[label] = self.pc
+
+            if not remainder:
+                continue
+
+            upper = remainder.upper()
+            if upper.startswith(".ORIG"):
+                args = remainder.split(None, 1)
+                if len(args) != 2:
+                    raise AssemblerError(f"Línea {lineno}: .ORIG requiere una dirección")
+                self.pc = self.origin_override if self.origin_override is not None else _parse_int(args[1])
+                if self.origin is None:
+                    self.origin = self.pc
+                self.has_origin = True
+                continue
+
+            if upper.startswith(".EXTERNAL"):
+                args = remainder.split(None, 1)
+                names = re.split(r"[\s,]+", args[1].strip()) if len(args) > 1 else []
+                for name in names:
+                    if name:
+                        self.externals.add(name)
+                        self.external_references.append(name)
+                continue
+
+            if upper.startswith(".END"):
+                break
+
+            if upper.startswith(".FILL"):
+                expr = remainder.split(None, 1)[1] if " " in remainder else "0"
+                self.entries.append(ProgramEntry(address=self.pc, kind="fill", text=expr.strip(), lineno=lineno))
+                self.pc += 1
+                continue
+
+            if upper.startswith(".BLKW"):
+                count_expr = remainder.split(None, 1)[1] if " " in remainder else "0"
+                count_val = self._resolve_numeric_expr(count_expr, lineno)
+                if count_val < 0:
+                    raise AssemblerError(f"Línea {lineno}: .BLKW no puede ser negativo")
+                self.entries.append(ProgramEntry(address=self.pc, kind="blkw", text=str(count_val), lineno=lineno))
+                self.pc += count_val
+                continue
+
+            if upper.startswith(".STRINGZ"):
+                literal = remainder.split(None, 1)[1] if " " in remainder else ""
+                payload = self._parse_string_literal(literal, lineno)
+                self.entries.append(ProgramEntry(address=self.pc, kind="stringz", text=payload, lineno=lineno))
+                self.pc += len(payload) + 1
+                continue
+
+            self.entries.append(ProgramEntry(address=self.pc, kind="instr", text=remainder, lineno=lineno))
+            self.pc += 1
+
+        if not self.has_origin:
+            raise AssemblerError("Falta .ORIG en el archivo.")
+
+    def _pass2(self) -> None:
+        final_entries: List[ProgramEntry] = []
+        for entry in self.entries:
+            if entry.kind == "fill":
+                value = self._resolve_numeric_expr(entry.text or "0", entry.lineno)
+                final_entries.append(ProgramEntry(entry.address, "word", value=value & 0xFFFF, text=entry.text, lineno=entry.lineno))
+            elif entry.kind == "blkw":
+                count = int(self._resolve_numeric_expr(entry.text or "0", entry.lineno))
+                for i in range(count):
+                    final_entries.append(ProgramEntry(entry.address + i, "word", value=0, lineno=entry.lineno))
+            elif entry.kind == "stringz":
+                payload = entry.text or ""
+                for i, ch in enumerate(payload):
+                    final_entries.append(ProgramEntry(entry.address + i, "word", value=ord(ch), lineno=entry.lineno))
+                final_entries.append(ProgramEntry(entry.address + len(payload), "word", value=0, lineno=entry.lineno))
+            elif entry.kind == "instr":
+                encoded = self._encode_instruction(entry.text or "", entry.lineno)
+                final_entries.append(ProgramEntry(entry.address, "word", value=encoded & 0xFFFF, text=entry.text, lineno=entry.lineno))
+            else:
+                final_entries.append(entry)
+        self.entries = final_entries
+
+    def _resolve_numeric_expr(self, expr: str, lineno: int) -> int:
+        expr = expr.strip()
+        if not expr:
+            return 0
+        if expr in self.external_addresses:
+            return self.external_addresses[expr]
+        if expr in self.externals:
+            raise AssemblerError(f"Línea {lineno}: símbolo externo no resuelto: {expr}")
+        if expr in self.symbols:
+            value = self.symbols[expr]
+            if value is None:
+                raise AssemblerError(f"Línea {lineno}: símbolo no resuelto: {expr}")
+            return int(value)
+        try:
+            return int(_parse_int(expr))
+        except ValueError:
+            pass
+
+        pieces = re.split(r"(?<![A-Za-z0-9_])([+\-])", expr)
+        if not pieces:
+            raise AssemblerError(f"Línea {lineno}: expresión inválida: {expr!r}")
+        current = self._resolve_single_atom(pieces[0], lineno)
+        for op, term in zip(pieces[1::2], pieces[2::2]):
+            value = self._resolve_single_atom(term, lineno)
+            current = current + value if op == "+" else current - value
+        return int(current)
+
+    def _resolve_single_atom(self, atom: str, lineno: int) -> int:
+        atom = atom.strip()
+        if not atom:
+            return 0
+        if atom in self.external_addresses:
+            return self.external_addresses[atom]
+        if atom in self.externals:
+            raise AssemblerError(f"Línea {lineno}: símbolo externo no resuelto: {atom}")
+        if atom in self.symbols:
+            value = self.symbols[atom]
+            if value is None:
+                raise AssemblerError(f"Línea {lineno}: símbolo no resuelto: {atom}")
+            return int(value)
+        try:
+            return int(_parse_int(atom))
+        except ValueError as exc:
+            raise AssemblerError(f"Línea {lineno}: símbolo o literal inválido: {atom!r}") from exc
+
+    def _parse_string_literal(self, literal: str, lineno: int) -> str:
+        s = literal.strip()
+        if not s:
+            raise AssemblerError(f"Línea {lineno}: .STRINGZ requiere literal")
+        if s[0] == '"' and s[-1] == '"':
+            try:
+                return ast.literal_eval(s)
+            except (ValueError, SyntaxError) as exc:
+                raise AssemblerError(f"Línea {lineno}: string inválido: {s!r}") from exc
+        raise AssemblerError(f"Línea {lineno}: .STRINGZ debe usar comillas dobles")
+
+    def _encode_instruction(self, instruction: str, lineno: int) -> int:
+        tokens = _split_operands(instruction)
+        if not tokens:
+            return 0
+        mnemonic = tokens[0].upper()
+        args = tokens[1:]
+
+        if mnemonic.startswith("BR"):
+            if len(args) != 1:
+                raise AssemblerError(f"Línea {lineno}: {mnemonic} requiere un destino")
+            cond = _cond_mask_from_mnemonic(mnemonic)
+            target = self._resolve_address(args[0], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, mnemonic)
+            return ((0b0000 << 12) | ((cond & 0b111) << 9) | (offset & 0x1FF)) & 0xFFFF
+
+        if mnemonic == "ADD":
+            if len(args) != 3:
+                raise AssemblerError(f"Línea {lineno}: ADD requiere 3 argumentos")
+            dr = _parse_register(args[0])
+            sr1 = _parse_register(args[1])
+            op = args[2]
+            if op.startswith("R"):
+                sr2 = _parse_register(op)
+                return (0b0001 << 12) | (dr << 9) | (sr1 << 6) | sr2
+            imm = self._resolve_numeric_expr(op, lineno)
+            if imm < -16 or imm > 15:
+                raise AssemblerError(f"Línea {lineno}: inmediato fuera de rango para ADD")
+            return (0b0001 << 12) | (dr << 9) | (sr1 << 6) | 0x20 | (imm & 0x1F)
+
+        if mnemonic == "AND":
+            if len(args) != 3:
+                raise AssemblerError(f"Línea {lineno}: AND requiere 3 argumentos")
+            dr = _parse_register(args[0])
+            sr1 = _parse_register(args[1])
+            op = args[2]
+            if op.startswith("R"):
+                sr2 = _parse_register(op)
+                return (0b0101 << 12) | (dr << 9) | (sr1 << 6) | sr2
+            imm = self._resolve_numeric_expr(op, lineno)
+            if imm < -16 or imm > 15:
+                raise AssemblerError(f"Línea {lineno}: inmediato fuera de rango para AND")
+            return (0b0101 << 12) | (dr << 9) | (sr1 << 6) | 0x20 | (imm & 0x1F)
+
+        if mnemonic == "LD":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: LD requiere 2 argumentos")
+            dr = _parse_register(args[0])
+            target = self._resolve_address(args[1], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, "LD")
+            return (0b0010 << 12) | (dr << 9) | (offset & 0x1FF)
+
+        if mnemonic == "ST":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: ST requiere 2 argumentos")
+            sr = _parse_register(args[0])
+            target = self._resolve_address(args[1], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, "ST")
+            return (0b0011 << 12) | (sr << 9) | (offset & 0x1FF)
+
+        if mnemonic == "LDI":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: LDI requiere 2 argumentos")
+            dr = _parse_register(args[0])
+            target = self._resolve_address(args[1], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, "LDI")
+            return (0b1010 << 12) | (dr << 9) | (offset & 0x1FF)
+
+        if mnemonic == "STI":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: STI requiere 2 argumentos")
+            sr = _parse_register(args[0])
+            target = self._resolve_address(args[1], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, "STI")
+            return (0b1011 << 12) | (sr << 9) | (offset & 0x1FF)
+
+        if mnemonic == "LDR":
+            if len(args) != 3:
+                raise AssemblerError(f"Línea {lineno}: LDR requiere 3 argumentos")
+            dr = _parse_register(args[0])
+            base = _parse_register(args[1])
+            off = self._resolve_numeric_expr(args[2], lineno)
+            if off < -32 or off > 31:
+                raise AssemblerError(f"Línea {lineno}: offset fuera de rango para LDR")
+            return (0b0110 << 12) | (dr << 9) | (base << 6) | (off & 0x3F)
+
+        if mnemonic == "STR":
+            if len(args) != 3:
+                raise AssemblerError(f"Línea {lineno}: STR requiere 3 argumentos")
+            sr = _parse_register(args[0])
+            base = _parse_register(args[1])
+            off = self._resolve_numeric_expr(args[2], lineno)
+            if off < -32 or off > 31:
+                raise AssemblerError(f"Línea {lineno}: offset fuera de rango para STR")
+            return (0b0111 << 12) | (sr << 9) | (base << 6) | (off & 0x3F)
+
+        if mnemonic == "LEA":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: LEA requiere 2 argumentos")
+            dr = _parse_register(args[0])
+            target = self._resolve_address(args[1], lineno)
+            offset = self._pc_relative_offset(target, lineno, 9, "LEA")
+            return (0b1110 << 12) | (dr << 9) | (offset & 0x1FF)
+
+        if mnemonic == "NOT":
+            if len(args) != 2:
+                raise AssemblerError(f"Línea {lineno}: NOT requiere 2 argumentos")
+            dr = _parse_register(args[0])
+            sr = _parse_register(args[1])
+            return (0b1001 << 12) | (dr << 9) | (sr << 6) | 0x3F
+
+        if mnemonic == "JSR":
+            if len(args) != 1:
+                raise AssemblerError(f"Línea {lineno}: JSR requiere 1 argumento")
+            target = self._resolve_address(args[0], lineno)
+            offset = self._pc_relative_offset(target, lineno, 11, "JSR")
+            return (0b0100 << 12) | (1 << 11) | (offset & 0x7FF)
+
+        if mnemonic == "JSRR":
+            if len(args) != 1:
+                raise AssemblerError(f"Línea {lineno}: JSRR requiere 1 registro")
+            reg = _parse_register(args[0])
+            return (0b0100 << 12) | (reg << 6)
+
+        if mnemonic == "JMP":
+            if len(args) != 1:
+                raise AssemblerError(f"Línea {lineno}: JMP requiere 1 registro")
+            reg = _parse_register(args[0])
+            return (0b1100 << 12) | (reg << 6)
+
+        if mnemonic == "RET":
+            return 0xC1C0
+
+        if mnemonic == "HALT":
+            return 0xF025
+
+        if mnemonic == "TRAP":
+            if len(args) != 1:
+                raise AssemblerError(f"Línea {lineno}: TRAP requiere un vector")
+            vec = self._resolve_numeric_expr(args[0], lineno)
+            if vec < 0 or vec > 255:
+                raise AssemblerError(f"Línea {lineno}: TRAP fuera de rango")
+            return (0b1111 << 12) | (vec & 0xFF)
+
+        if mnemonic in {"GETC", "OUT", "PUTS", "IN"}:
+            trap_vectors = {"GETC": 0xF020, "OUT": 0xF021, "PUTS": 0xF022, "IN": 0xF023}
+            return trap_vectors[mnemonic]
+
+        if mnemonic == "NOP":
+            return 0x0000
+
+        raise AssemblerError(f"Línea {lineno}: instrucción no soportada: {mnemonic}")
+
+    def _resolve_address(self, token: str, lineno: int) -> int:
+        token = token.strip()
+        if token in self.external_addresses:
+            return self.external_addresses[token]
+        if token in self.externals:
+            raise AssemblerError(f"Línea {lineno}: símbolo externo no resuelto: {token}")
+        if token in self.symbols:
+            value = self.symbols[token]
+            if value is None:
+                raise AssemblerError(f"Línea {lineno}: símbolo no resuelto: {token}")
+            return int(value)
+        try:
+            return self._resolve_numeric_expr(token, lineno)
+        except AssemblerError:
+            raise AssemblerError(f"Línea {lineno}: símbolo no definido: {token}")
+
+    def _pc_relative_offset(self, target: int, lineno: int, bits: int, mnemonic: str) -> int:
+        pc = self._address_for_line(lineno)
+        offset = target - (pc + 1)
+        minimum = -(1 << (bits - 1))
+        maximum = (1 << (bits - 1)) - 1
+        if offset < minimum or offset > maximum:
+            raise AssemblerError(f"Línea {lineno}: offset fuera de rango para {mnemonic}")
+        return offset
+
+    def _address_for_line(self, lineno: int) -> int:
+        for entry in self.entries:
+            if entry.lineno == lineno and entry.kind == "instr":
+                return entry.address
+        return self.pc
+
+
+def assemble_source(source: str, output_format: str = "hex") -> str | bytes:
+    return Assembler().assemble_string(source, output_format)
+
+
+def assemble_file(path: str | Path, output_format: str = "hex") -> str | bytes:
+    return Assembler().assemble_file(path, output_format)
+
+
+class ProjectLinker:
+    def __init__(self, module_dir: str | Path) -> None:
+        self.module_dir = Path(module_dir)
+        self.module_files = sorted(self.module_dir.rglob("*.asm")) if self.module_dir.is_dir() else []
+        self.files_by_stem: Dict[str, List[Path]] = {}
+        for path in self.module_files:
+            self.files_by_stem.setdefault(path.stem.casefold(), []).append(path)
+        self.units: Dict[Path, LinkedSource] = {}
+        self.unit_order: List[LinkedSource] = []
+
+    def assemble_file(self, source_path: str | Path, output_format: str = "hex") -> str | bytes:
+        root_path = Path(source_path).resolve()
+        pending = deque([(root_path, True)])
+        queued_paths = {root_path}
+        while pending:
+            path, is_root = pending.popleft()
+            unit = self._load_unit(path, is_root)
+            for reference in unit.external_references:
+                module_name, separator, symbol = reference.partition("-")
+                if separator:
+                    if not module_name or not symbol:
+                        raise AssemblerError(
+                            f".EXTERNAL inválido en {unit.path}: {reference!r}; "
+                            "se esperaba MODULO-SIMBOLO."
+                        )
+                    module_path = self._find_module(module_name, symbol)
+                else:
+                    module_path = self._find_exporting_module(reference)
+                    symbol = reference
+                module_path = module_path.resolve()
+                unit.external_targets[reference] = (module_path, symbol)
+                if module_path not in queued_paths:
+                    queued_paths.add(module_path)
+                    pending.append((module_path, False))
+
+        root = self.units[root_path]
+
+        root.base = root.origin
+        next_address = root.base + root.size
+        if next_address > 0x10000:
+            raise AssemblerError("El programa principal excede el espacio de memoria de 64 KiB.")
+        for unit in self.unit_order:
+            if unit is root:
+                continue
+            unit.base = next_address
+            next_address += unit.size
+            if next_address > 0x10000:
+                raise AssemblerError("El programa enlazado excede el espacio de memoria de 64 KiB.")
+
+        words: List[int] = []
+        for unit in self.unit_order:
+            external_addresses = self._external_addresses(unit)
+            assembler = Assembler(
+                external_addresses=external_addresses,
+                origin_override=unit.base,
+            )
+            words.extend(assembler.assemble(unit.source))
+
+        output_words = [root.base, *words]
+        if output_format.lower() == "obj":
+            return _object_bytes(output_words)
+        if output_format.lower() == "hex":
+            return " ".join(f"{word & 0xFFFF:04X}" for word in output_words)
+        if output_format.lower() == "bin":
+            return " ".join(f"{word & 0xFFFF:016b}" for word in output_words)
+        if output_format.lower() == "dec":
+            return " ".join(str(word & 0xFFFF) for word in output_words)
+        raise AssemblerError(f"Formato de salida inválido: {output_format}")
+
+    def _load_unit(self, path: Path, is_root: bool) -> LinkedSource:
+        resolved_path = path.resolve()
+        if resolved_path in self.units:
+            return self.units[resolved_path]
+
+        source = resolved_path.read_text(encoding="utf-8-sig")
+        analyzer = Assembler(origin_override=None if is_root else 0)
+        analyzer._pass1(source)
+        if analyzer.origin is None:
+            raise AssemblerError(f"Falta .ORIG en el archivo principal: {resolved_path}")
+
+        unit = LinkedSource(
+            path=resolved_path,
+            source=source,
+            symbols=dict(analyzer.symbols),
+            origin=analyzer.origin,
+            size=analyzer.pc - analyzer.origin,
+            external_references=list(analyzer.external_references),
+        )
+        self.units[resolved_path] = unit
+        self.unit_order.append(unit)
+        return unit
+
+    def _find_module(self, module_name: str, symbol: str) -> Path:
+        candidates = self.files_by_stem.get(module_name.casefold(), [])
+        if not candidates:
+            candidates = self.files_by_stem.get(f"g27_{module_name}".casefold(), [])
+        if len(candidates) > 1:
+            raise AssemblerError(f"Nombre de módulo ambiguo en {self.module_dir}: {module_name}")
+        if candidates:
+            candidate = candidates[0]
+            if not self._defines_label(candidate, symbol):
+                raise AssemblerError(
+                    f"El módulo {candidate.name} no define el símbolo externo {symbol}."
+                )
+            return candidate
+
+        matches = [path for path in self.module_files if self._defines_label(path, symbol)]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise AssemblerError(
+                f"No se encontró el módulo {module_name} ni una definición de {symbol} "
+                f"en {self.module_dir}."
+            )
+        raise AssemblerError(
+            f"El símbolo {symbol} aparece en varios módulos; no se puede resolver "
+            f"{module_name}-{symbol} sin una coincidencia de nombre de módulo."
+        )
+
+    def _find_exporting_module(self, symbol: str) -> Path:
+        matches = [path for path in self.module_files if self._defines_label(path, symbol)]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise AssemblerError(
+                f"No se encontró una definición del símbolo externo {symbol} "
+                f"en {self.module_dir}."
+            )
+        raise AssemblerError(
+            f"El símbolo externo {symbol} aparece en varios módulos de {self.module_dir}; "
+            "use .EXTERNAL MODULO-SIMBOLO para identificarlo."
+        )
+
+    @staticmethod
+    def _defines_label(path: Path, symbol: str) -> bool:
+        source = path.read_text(encoding="utf-8-sig")
+        for raw in source.splitlines():
+            line = raw.split(";", 1)[0].strip()
+            if not line or line.startswith("."):
+                continue
+            first_token = line.split(None, 1)[0].rstrip(":")
+            if first_token == symbol:
+                return True
+        return False
+
+    def _external_addresses(self, unit: LinkedSource) -> Dict[str, int]:
+        addresses: Dict[str, int] = {}
+        for reference, (target_path, symbol) in unit.external_targets.items():
+            target = self.units[target_path]
+            symbol_address = target.symbols.get(symbol)
+            if symbol_address is None:
+                raise AssemblerError(
+                    f"El módulo {target.path.name} no define el símbolo externo {symbol}."
+                )
+            address = target.base + int(symbol_address) - target.origin
+            if address < 0 or address > 0xFFFF:
+                raise AssemblerError(
+                    f"La dirección enlazada de {reference} está fuera de memoria: {address:#x}."
+                )
+            addresses[reference] = address
+        return addresses
+
+
+def assemble_project_file(
+    path: str | Path,
+    output_format: str = "hex",
+    module_dir: str | Path | None = None,
+) -> str | bytes:
+    source_path = Path(path)
+    if module_dir is None:
+        module_dir = source_path.parent / "lib"
+    return ProjectLinker(module_dir).assemble_file(source_path, output_format)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Ensamblador simple para LC-3 / ISA del laboratorio")
+    parser.add_argument("source", type=str, help="Archivo assembly a compilar")
+    parser.add_argument(
+        "--format",
+        choices=["hex", "bin", "dec", "obj"],
+        default="hex",
+        help="Formato de salida",
+    )
+    parser.add_argument("--link-dir", type=str, help="Carpeta con módulos .asm (por defecto, lib junto al fuente)")
+    args = parser.parse_args(argv)
+    source_path = Path(args.source)
+    output_suffix = {"hex": ".hex", "bin": ".bin", "dec": ".dec", "obj": ".obj"}[args.format]
+    output_path = source_path.with_suffix(output_suffix)
+    try:
+        output = assemble_project_file(source_path, args.format, args.link_dir)
+    except FileNotFoundError as exc:
+        missing_path = exc.filename or args.source
+        print(f"ERROR: archivo no encontrado: {missing_path}", file=sys.stderr)
+        return 1
+    except AssemblerError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        if isinstance(output, bytes):
+            output_path.write_bytes(output)
+        else:
+            output_path.write_text("\n".join(output.split()) + "\n", encoding="ascii")
+        print(f"Archivo generado: {output_path}")
+        return 0
+    except OSError as exc:
+        print(f"ERROR: no se pudo escribir el archivo de salida: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
